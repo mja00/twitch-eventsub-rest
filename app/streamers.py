@@ -35,9 +35,12 @@ class StreamerManager:
                 except Exception as e:
                     logger.error(f"Failed to add default streamer {username}: {e}")
 
+        # Validate and fix EventSub subscriptions for all streamers
+        await self.validate_and_fix_subscriptions()
+
         # Initialize current status for all monitored streamers
         await self._initialize_streamer_statuses()
-        
+
         # Start background update task
         self._update_task = asyncio.create_task(self._update_live_streams())
 
@@ -372,18 +375,22 @@ class StreamerManager:
             if not streamers:
                 logger.info("No monitored streamers found to initialize")
                 return
-            
-            logger.info(f"Initializing status for {len(streamers)} monitored streamers...")
-            
+
+            logger.info(
+                f"Initializing status for {len(streamers)} monitored streamers..."
+            )
+
             for streamer in streamers:
                 if not streamer.is_active:
                     continue
-                
+
                 try:
                     # Get current stream status from Twitch API
-                    stream_data = await self.twitch_api.get_stream_info(streamer.user_id)
+                    stream_data = await self.twitch_api.get_stream_info(
+                        streamer.user_id
+                    )
                     is_live = stream_data is not None
-                    
+
                     # Create and store initial status
                     status = StreamStatus(
                         user_id=streamer.user_id,
@@ -392,20 +399,100 @@ class StreamerManager:
                         is_live=is_live,
                         stream_data=stream_data,
                         last_updated=datetime.utcnow(),
-                        last_event_type=None
+                        last_event_type=None,
                     )
                     await self.storage.store_stream_status(status)
-                    
+
                     logger.info(
                         f"Initialized {streamer.username}: {'live' if is_live else 'offline'}"
-                        + (f" - {stream_data.get('game_name', 'Unknown')} - {stream_data.get('viewer_count', 0)} viewers" 
-                           if is_live and stream_data else "")
+                        + (
+                            f" - {stream_data.get('game_name', 'Unknown')} - {stream_data.get('viewer_count', 0)} viewers"
+                            if is_live and stream_data
+                            else ""
+                        )
                     )
-                    
+
                 except Exception as e:
-                    logger.error(f"Error initializing status for {streamer.username}: {e}")
-            
+                    logger.error(
+                        f"Error initializing status for {streamer.username}: {e}"
+                    )
+
             logger.info("Completed streamer status initialization")
-            
+
         except Exception as e:
             logger.error(f"Error during streamer status initialization: {e}")
+
+    async def validate_and_fix_subscriptions(self):
+        """Validate and fix EventSub subscriptions for all streamers"""
+        try:
+            streamers = await self.storage.get_all_streamers()
+            if not streamers:
+                logger.info("No streamers found to validate subscriptions")
+                return
+
+            logger.info(
+                f"Validating EventSub subscriptions for {len(streamers)} streamers..."
+            )
+
+            fixed_count = 0
+            for streamer in streamers:
+                if not streamer.is_active:
+                    continue
+
+                # Check if subscription exists and is valid
+                subscription_valid = False
+                if streamer.subscription_id:
+                    subscription_valid = await self.twitch_api.validate_subscription(
+                        streamer.subscription_id
+                    )
+
+                if not subscription_valid:
+                    # Delete the old one (if it exists)
+                    if streamer.subscription_id:
+                        try:
+                            await self.twitch_api.delete_eventsub_subscription(
+                                streamer.subscription_id
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                f"Could not delete old subscription for {streamer.username}: {e}"
+                            )
+
+                    logger.info(f"Creating new subscription for {streamer.username}")
+                    try:
+                        # Create new EventSub subscription
+                        subscription_id = (
+                            await self.twitch_api.create_eventsub_subscription(
+                                event_type="stream.online",
+                                condition={"broadcaster_user_id": streamer.user_id},
+                            )
+                        )
+
+                        # Update streamer with new subscription ID
+                        streamer.subscription_id = subscription_id
+                        streamer.is_active = True
+                        await self.storage.store_streamer(streamer)
+
+                        fixed_count += 1
+                        logger.info(
+                            f"Fixed subscription for {streamer.username}: {subscription_id}"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to fix subscription for {streamer.username}: {e}"
+                        )
+                        # Mark streamer as inactive if subscription creation fails
+                        streamer.is_active = False
+                        await self.storage.store_streamer(streamer)
+                else:
+                    logger.debug(
+                        f"Subscription valid for {streamer.username}: {streamer.subscription_id}"
+                    )
+
+            logger.info(
+                f"Subscription validation complete. Fixed {fixed_count} subscriptions."
+            )
+
+        except Exception as e:
+            logger.error(f"Error during subscription validation: {e}")

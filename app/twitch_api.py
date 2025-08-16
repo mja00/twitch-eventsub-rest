@@ -125,12 +125,40 @@ class TwitchAPI:
     async def delete_eventsub_subscription(self, subscription_id: str) -> None:
         """Delete EventSub subscription"""
         try:
-            await self._make_request(
-                "DELETE", f"eventsub/subscriptions?id={subscription_id}"
-            )
+            token = await self._get_access_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Client-Id": self.client_id,
+                "Content-Type": "application/json",
+            }
+
+            async with httpx.AsyncClient() as client:
+                response = await client.delete(
+                    f"{self.base_url}/eventsub/subscriptions?id={subscription_id}",
+                    headers=headers,
+                )
+
+                if response.status_code == 404:
+                    # Subscription doesn't exist, which means it's already deleted
+                    logger.debug(
+                        f"Subscription {subscription_id} already deleted (404)"
+                    )
+                    return
+                elif response.status_code not in [200, 201, 202, 204]:
+                    raise Exception(
+                        f"Twitch API error: {response.status_code} - {response.text}"
+                    )
+
         except Exception as e:
-            logger.error(f"Error deleting EventSub subscription {subscription_id}: {e}")
-            raise
+            # Check if it's a 404 error embedded in the exception message
+            if "404" in str(e) or "not found" in str(e).lower():
+                logger.debug(f"Subscription {subscription_id} already deleted (404)")
+                return
+            else:
+                logger.error(
+                    f"Error deleting EventSub subscription {subscription_id}: {e}"
+                )
+                raise
 
     async def get_eventsub_subscriptions(self) -> List[Dict[str, Any]]:
         """Get all EventSub subscriptions"""
@@ -141,6 +169,20 @@ class TwitchAPI:
             logger.error(f"Error getting EventSub subscriptions: {e}")
             return []
 
+    async def get_eventsub_costs(self) -> Dict[str, Any]:
+        """Get EventSub costs"""
+        try:
+            response = await self._make_request("GET", "eventsub/subscriptions")
+            total_cost = response.get("total_cost", 0)
+            max_total_cost = response.get("max_total_cost", 0)
+            return {
+                "total_cost": total_cost,
+                "max_total_cost": max_total_cost,
+            }
+        except Exception as e:
+            logger.error(f"Error getting EventSub costs: {e}")
+            return {}
+
     async def get_stream_info(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get current stream information for a user"""
         try:
@@ -150,3 +192,74 @@ class TwitchAPI:
         except Exception as e:
             logger.error(f"Error getting stream info for {user_id}: {e}")
             return None
+
+    async def cleanup_webhook_subscriptions(self) -> int:
+        """Remove all EventSub subscriptions for our webhook URL"""
+        try:
+            subscriptions = await self.get_eventsub_subscriptions()
+            logger.info(f"Found {len(subscriptions)} subscriptions")
+
+            webhook_subscriptions = [
+                sub
+                for sub in subscriptions
+                if sub.get("transport", {}).get("callback") == settings.WEBHOOK_URL
+            ]
+            cleanup_count = 0
+            for subscription in webhook_subscriptions:
+                try:
+                    await self.delete_eventsub_subscription(subscription["id"])
+                    cleanup_count += 1
+                    logger.info(
+                        f"Cleaned up subscription: {subscription['type']} for {subscription.get('condition', {})}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to cleanup subscription {subscription['id']}: {e}"
+                    )
+
+            logger.info(f"Cleaned up {cleanup_count} existing webhook subscriptions")
+            return cleanup_count
+        except Exception as e:
+            logger.error(f"Error during subscription cleanup: {e}")
+            return 0
+
+    async def validate_subscription(self, subscription_id: str) -> bool:
+        """Check if a subscription ID is still valid and active"""
+        try:
+            subscriptions = await self.get_eventsub_subscriptions()
+            for subscription in subscriptions:
+                if (
+                    subscription["id"] == subscription_id
+                    and subscription.get("status") == "enabled"
+                ):
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"Error validating subscription {subscription_id}: {e}")
+            return False
+
+    async def delete_all_subscriptions(self) -> int:
+        """Delete ALL EventSub subscriptions (regardless of callback URL)"""
+        try:
+            subscriptions = await self.get_eventsub_subscriptions()
+            logger.info(f"Found {len(subscriptions)} total subscriptions to delete")
+
+            deleted_count = 0
+            for subscription in subscriptions:
+                try:
+                    await self.delete_eventsub_subscription(subscription["id"])
+                    deleted_count += 1
+                    logger.info(
+                        f"Deleted subscription: {subscription['type']} for {subscription.get('condition', {})} "
+                        f"(callback: {subscription.get('transport', {}).get('callback', 'unknown')})"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to delete subscription {subscription['id']}: {e}"
+                    )
+
+            logger.info(f"Deleted {deleted_count} total subscriptions")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Error during all subscriptions cleanup: {e}")
+            return 0

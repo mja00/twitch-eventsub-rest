@@ -9,10 +9,13 @@ A Python FastAPI server that listens to Twitch's EventSub system for stream live
 - 📡 **REST API**: Manage streamers and view events via HTTP endpoints
 - 🔍 **Live Stream Status**: Real-time status checking for any Twitch streamer
 - ⏰ **Smart Updates**: Background refresh of live stream data every 5 minutes
-- 🚀 **Startup Initialization**: Populate stream status on server start
+- 🚀 **Startup Initialization**: Populate stream status and validate subscriptions on server start
 - 🐳 **Docker Ready**: Complete Docker setup with docker-compose
-- 🔐 **Secure**: Webhook signature verification
+- 🔐 **Secure**: Webhook signature verification and optional API key authentication
 - 📊 **Event History**: Store and retrieve recent stream events
+- 🔧 **Admin Tools**: Complete subscription management and monitoring endpoints
+- ⚡ **Fast Startup**: Immediate webhook response for challenge verification
+- 🛡️ **Robust**: Automatic subscription validation and recovery
 
 ## Quick Start
 
@@ -71,6 +74,11 @@ curl -H "Authorization: Bearer your-api-key" "http://localhost:8000/streams/live
 
 # Add streamer with API key
 curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/streamers/shroud"
+
+# Admin operations (require API key)
+curl -H "Authorization: Bearer your-api-key" "http://localhost:8000/admin/subscriptions"
+curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admin/verify-subscriptions"
+curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admin/cleanup-subscriptions"
 ```
 
 ## API Endpoints
@@ -95,6 +103,14 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/stre
 - `POST /webhooks/eventsub` - EventSub webhook endpoint (used by Twitch)
 
 > **Note**: The webhook endpoint is always accessible without API key (Twitch needs access)
+
+### Admin Endpoints
+- `GET /admin/subscriptions` - View all current EventSub subscriptions
+- `POST /admin/cleanup-subscriptions` - Remove subscriptions for our webhook URL
+- `POST /admin/verify-subscriptions` - Re-validate and fix all tracked streamers' subscriptions
+- `POST /admin/delete-all-subscriptions` - ⚠️ Delete ALL subscriptions (nuclear option)
+
+> **Note**: All admin endpoints require API key authentication
 
 ### Response Examples
 
@@ -222,8 +238,11 @@ Each event is stored with:
 ### Startup Process
 1. **Load Configuration**: Reads environment variables and default streamers
 2. **Connect to Storage**: Initializes Redis or in-memory storage
-3. **Initialize Stream Status**: Queries Twitch API for current status of all monitored streamers
-4. **Start EventSub Subscriptions**: Creates webhooks for monitored streamers
+3. **Start Webhook**: Server starts immediately to handle EventSub challenge verification
+4. **Background Initialization**: 
+   - Validate and fix EventSub subscriptions for all monitored streamers
+   - Query Twitch API for current status of all monitored streamers
+   - Create missing EventSub subscriptions
 5. **Launch Background Tasks**: Starts 5-minute refresh cycle for live streams
 
 ### Real-time Updates
@@ -296,9 +315,52 @@ INFO: Stream online: shroud (shroud)
 INFO: Updated stream status for pokimane: live
 ```
 
+## Subscription Management
+
+### Automatic Validation
+The server automatically validates and fixes EventSub subscriptions on startup:
+- Checks if stored subscription IDs are still valid and active
+- Recreates missing or invalid subscriptions automatically  
+- Handles 404 errors gracefully (subscription already deleted)
+- Marks streamers as inactive if subscription creation fails
+
+### Manual Management
+Use admin endpoints for manual subscription management:
+
+```bash
+# View all current subscriptions (yours and others)
+curl -H "Authorization: Bearer your-api-key" "http://localhost:8000/admin/subscriptions"
+
+# Manually re-validate all tracked streamers' subscriptions
+curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admin/verify-subscriptions"
+
+# Clean up subscriptions for your webhook URL only
+curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admin/cleanup-subscriptions"
+
+# Nuclear option: Delete ALL subscriptions (use with caution!)
+curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admin/delete-all-subscriptions"
+```
+
+### Troubleshooting
+
+**Challenge Verification Issues:**
+- Server starts immediately to handle webhook challenges
+- Challenge responses follow Twitch's exact requirements (status 200, Content-Type length)
+- Check logs for challenge verification attempts
+
+**Duplicate Subscriptions:**
+- Use cleanup endpoint to remove duplicates for your webhook URL
+- Automatic validation prevents most duplicate scenarios
+
+**Missing Subscriptions:**
+- Re-run subscription verification endpoint
+- Check streamer status (`GET /streamers`) to see if streamers are marked as inactive
+- Review logs for subscription creation errors
+
 ## Security
 
 - **Webhook Verification**: All EventSub webhooks are verified using HMAC-SHA256
+- **API Key Authentication**: Optional Bearer token protection for all API endpoints
 - **Environment Variables**: Sensitive data stored in environment variables
 - **Non-root User**: Docker container runs as non-root user
 - **HTTPS Required**: Twitch requires HTTPS for webhook endpoints in production
