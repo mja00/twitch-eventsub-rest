@@ -154,9 +154,7 @@ async def remove_streamer(username: str, api_key_valid: bool = Depends(verify_ap
 
 
 @app.get("/events")
-async def get_recent_events(
-    limit: int = 50, api_key_valid: bool = Depends(verify_api_key)
-):
+async def get_recent_events(limit: int = 50):
     """Get recent stream events"""
     storage = get_storage()
     events = await storage.get_recent_events(limit)
@@ -164,9 +162,7 @@ async def get_recent_events(
 
 
 @app.get("/streamers/{username}/status")
-async def get_streamer_status(
-    username: str, api_key_valid: bool = Depends(verify_api_key)
-):
+async def get_streamer_status(username: str):
     """Get current stream status for a streamer"""
     try:
         status = await streamer_manager.get_stream_status(username)
@@ -181,7 +177,7 @@ async def get_streamer_status(
 
 
 @app.get("/streams/live")
-async def get_live_streams(api_key_valid: bool = Depends(verify_api_key)):
+async def get_live_streams():
     """Get all currently live streams"""
     try:
         live_streams = await streamer_manager.get_live_streams()
