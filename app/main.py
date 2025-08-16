@@ -4,6 +4,7 @@ import logging
 import asyncio
 from typing import Optional
 from contextlib import asynccontextmanager
+import time
 
 from app.config import settings
 from app.storage import get_storage
@@ -20,6 +21,31 @@ logging.getLogger("httpx").setLevel(logging.ERROR)
 
 streamer_manager = StreamerManager()
 _initialization_task: Optional[asyncio.Task] = None
+
+
+def get_real_ip(request: Request) -> str:
+    """Extract the real client IP from request headers"""
+    # Check Cloudflare header first (most specific)
+    cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+    if cf_connecting_ip:
+        return cf_connecting_ip
+
+    # Check X-Forwarded-For header (standard proxy header)
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    if x_forwarded_for:
+        # X-Forwarded-For can contain multiple IPs, take the first one (original client)
+        return x_forwarded_for.split(",")[0].strip()
+
+    # Check X-Real-IP header (Nginx)
+    x_real_ip = request.headers.get("X-Real-IP")
+    if x_real_ip:
+        return x_real_ip
+
+    # Fall back to direct client IP
+    if request.client:
+        return request.client.host
+
+    return "unknown"
 
 
 async def _initialize_in_background():
@@ -66,6 +92,25 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log requests with real IP addresses"""
+    client_ip = get_real_ip(request)
+    start_time = time.time()
+
+    # Call the endpoint
+    response = await call_next(request)
+
+    # Log the request
+    process_time = time.time() - start_time
+    logger.info(
+        f'{client_ip} - "{request.method} {request.url.path}" '
+        f"{response.status_code} - {process_time:.3f}s"
+    )
+
+    return response
+
+
 @app.get("/")
 async def root():
     return {"message": "Twitch EventSub REST API"}
@@ -87,11 +132,13 @@ async def eventsub_webhook(request: Request):
     try:
         headers = request.headers
         body = await request.body()
+        client_ip = get_real_ip(request)
 
-        logger.debug(f"Received webhook request: {headers}")
+        logger.debug(f"Received webhook request from {client_ip}: {headers}")
 
         # Verify the signature
         if not verify_signature(headers, body, settings.WEBHOOK_SECRET):
+            logger.warning(f"Invalid webhook signature from {client_ip}")
             raise HTTPException(status_code=403, detail="Invalid signature")
 
         # Parse the JSON payload
@@ -101,9 +148,11 @@ async def eventsub_webhook(request: Request):
         # Handle challenge verification
         if "challenge" in payload:
             challenge = EventSubChallenge(**payload)
-            logger.info(f"Received EventSub challenge: {challenge.challenge}")
+            logger.info(
+                f"Received EventSub challenge from {client_ip}: {challenge.challenge}"
+            )
 
-            # Return raw challenge with Content-Type set to the length of the challenge
+            # Return raw challenge
             challenge_value = challenge.challenge
             return Response(
                 content=challenge_value,
