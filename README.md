@@ -7,6 +7,9 @@ A Python FastAPI server that listens to Twitch's EventSub system for stream live
 - 🎮 **Twitch EventSub Integration**: Listen to stream.online and stream.offline events
 - 🔧 **Flexible Storage**: Redis for production, in-memory for testing
 - 📡 **REST API**: Manage streamers and view events via HTTP endpoints
+- 🔍 **Live Stream Status**: Real-time status checking for any Twitch streamer
+- ⏰ **Smart Updates**: Background refresh of live stream data every 5 minutes
+- 🚀 **Startup Initialization**: Populate stream status on server start
 - 🐳 **Docker Ready**: Complete Docker setup with docker-compose
 - 🔐 **Secure**: Webhook signature verification
 - 📊 **Event History**: Store and retrieve recent stream events
@@ -42,17 +45,32 @@ docker-compose up -d
 STORAGE_TYPE=memory docker-compose up -d
 ```
 
-### 4. Add Streamers to Monitor
+### 4. Test the API
 
 ```bash
-# Add a streamer
+# Add a streamer to monitor
 curl -X POST "http://localhost:8000/streamers/shroud"
 
-# List all streamers
+# Check any streamer's current status
+curl "http://localhost:8000/streamers/shroud/status"
+
+# View all live streams
+curl "http://localhost:8000/streams/live"
+
+# List monitored streamers
 curl "http://localhost:8000/streamers"
 
 # Get recent events
 curl "http://localhost:8000/events"
+```
+
+**With API Key Protection (when enabled):**
+```bash
+# All API calls require Authorization header
+curl -H "Authorization: Bearer your-api-key" "http://localhost:8000/streams/live"
+
+# Add streamer with API key
+curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/streamers/shroud"
 ```
 
 ## API Endpoints
@@ -60,6 +78,12 @@ curl "http://localhost:8000/events"
 ### Health & Status
 - `GET /` - API info
 - `GET /health` - Health check
+
+> **Note**: Health endpoints are always accessible without API key
+
+### Stream Status & Live Streams
+- `GET /streamers/{username}/status` - Get current status for any streamer
+- `GET /streams/live` - Get all currently live streams we know about
 
 ### Streamers Management
 - `POST /streamers/{username}` - Add streamer to monitor
@@ -69,6 +93,48 @@ curl "http://localhost:8000/events"
 ### Events
 - `GET /events?limit=50` - Get recent stream events
 - `POST /webhooks/eventsub` - EventSub webhook endpoint (used by Twitch)
+
+> **Note**: The webhook endpoint is always accessible without API key (Twitch needs access)
+
+### Response Examples
+
+**Individual Streamer Status:**
+```json
+{
+  "user_id": "12345",
+  "username": "shroud",
+  "display_name": "shroud",
+  "is_live": true,
+  "stream_data": {
+    "viewer_count": 25000,
+    "game_name": "VALORANT",
+    "title": "Ranked matches"
+  },
+  "last_updated": "2024-01-15T11:45:23.123456",
+  "last_event_type": "stream.online",
+  "source": "storage"
+}
+```
+
+**All Live Streams:**
+```json
+{
+  "live_streams": [
+    {
+      "user_id": "12345",
+      "username": "shroud",
+      "display_name": "shroud",
+      "is_live": true,
+      "stream_data": {
+        "viewer_count": 25000,
+        "game_name": "VALORANT"
+      },
+      "last_updated": "2024-01-15T11:45:23.123456"
+    }
+  ],
+  "count": 1
+}
+```
 
 ## Configuration
 
@@ -83,6 +149,8 @@ curl "http://localhost:8000/events"
 | `STORAGE_TYPE` | Storage backend (`redis` or `memory`) | `memory` |
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `DEFAULT_STREAMERS` | Comma-separated list of streamers to monitor | Empty |
+| `REQUIRE_API_KEY` | Enable API key authentication (`true` or `false`) | `false` |
+| `API_KEY` | API key for protected endpoints | Empty |
 
 ### Twitch Application Setup
 
@@ -98,6 +166,18 @@ For production, you need a publicly accessible HTTPS endpoint:
 1. Deploy your server to a cloud provider
 2. Set up HTTPS (required by Twitch)
 3. Update `WEBHOOK_URL` in your environment
+
+**For Development with Ngrok:**
+```bash
+# Start your FastAPI server
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# In another terminal, start ngrok
+ngrok http 8000
+
+# Copy the HTTPS URL from ngrok and update your .env
+WEBHOOK_URL=https://abc123.ngrok.io/webhooks/eventsub
+```
 
 ## Development
 
@@ -137,12 +217,33 @@ Each event is stored with:
 - Timestamp
 - Original event data from Twitch
 
+## How It Works
+
+### Startup Process
+1. **Load Configuration**: Reads environment variables and default streamers
+2. **Connect to Storage**: Initializes Redis or in-memory storage
+3. **Initialize Stream Status**: Queries Twitch API for current status of all monitored streamers
+4. **Start EventSub Subscriptions**: Creates webhooks for monitored streamers
+5. **Launch Background Tasks**: Starts 5-minute refresh cycle for live streams
+
+### Real-time Updates
+- **EventSub Webhooks**: Twitch sends instant notifications when streams go live/offline
+- **Background Refresh**: Every 5 minutes, updates viewer counts, games, titles for live streams
+- **API Fallback**: Unknown streamers are queried from Twitch API and cached
+
+### Data Flow
+```
+Twitch EventSub → Webhook → Update Storage → Background Refresh → API Responses
+                     ↓
+              Instant Status Updates
+```
+
 ## Storage
 
 ### Redis (Production)
 - Persistent storage across restarts
 - Efficient sorted sets for event history
-- Hash maps for streamer configurations
+- Hash maps for streamer configurations and stream status
 - Automatic cleanup of old events (keeps last 1000)
 
 ### Memory (Testing)
@@ -182,7 +283,18 @@ docker-compose down
 ### Logs
 - Structured logging with timestamps
 - Event processing logs
+- Stream status initialization on startup
+- Background update progress
 - Error handling and reporting
+
+### Log Examples
+```
+INFO: Initializing status for 35 monitored streamers...
+INFO: Initialized shroud: live - VALORANT - 25000 viewers
+INFO: Initialized ninja: offline
+INFO: Stream online: shroud (shroud)
+INFO: Updated stream status for pokimane: live
+```
 
 ## Security
 
