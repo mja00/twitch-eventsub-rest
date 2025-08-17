@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # Set HTTPX to ERROR level only to reduce verbosity
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
+# Disable uvicorn access logging since we have our own middleware
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 streamer_manager = StreamerManager()
 _initialization_task: Optional[asyncio.Task] = None
 
@@ -102,10 +105,10 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
 
     # Log the request
-    process_time = time.time() - start_time
+    process_time_ms = (time.time() - start_time) * 1000
     logger.info(
         f'{client_ip} - "{request.method} {request.url.path}" '
-        f"{response.status_code} - {process_time:.3f}s"
+        f"{response.status_code} - {process_time_ms:.1f}ms"
     )
 
     return response
@@ -336,4 +339,4 @@ async def delete_all_subscriptions(api_key_valid: bool = Depends(verify_api_key)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, access_log=False)
