@@ -361,25 +361,46 @@ class StreamerManager:
                             )
                             is_live = stream_data is not None
 
-                            # Update status
-                            status = StreamStatus(
-                                user_id=streamer.user_id,
-                                username=streamer.username,
-                                display_name=streamer.display_name,
-                                is_live=is_live,
-                                stream_data=stream_data,
-                                last_updated=datetime.utcnow(),
-                                last_event_type=(
-                                    current_status.last_event_type
-                                    if current_status
-                                    else None
-                                ),
-                            )
-                            await self.storage.store_stream_status(status)
+                            # Be conservative: only update if we have a definitive change
+                            # or if this is the first time we're checking
+                            should_store_update = True
+                            
+                            if current_status is not None:
+                                # If we currently think they're live but API says offline,
+                                # be more cautious - could be a temporary API issue
+                                if current_status.is_live and not is_live:
+                                    # Only mark as offline if EventSub hasn't updated recently
+                                    # and we've had multiple API checks confirming they're offline
+                                    time_since_update = datetime.utcnow() - current_status.last_updated
+                                    if time_since_update < timedelta(minutes=15):
+                                        logger.debug(f"API says {streamer.username} is offline but recent status was live, keeping live status")
+                                        should_store_update = False
 
-                            logger.debug(
-                                f"Updated stream status for {streamer.username}: {'live' if is_live else 'offline'}"
-                            )
+                            if should_store_update:
+                                # Update status
+                                status = StreamStatus(
+                                    user_id=streamer.user_id,
+                                    username=streamer.username,
+                                    display_name=streamer.display_name,
+                                    is_live=is_live,
+                                    stream_data=stream_data,
+                                    last_updated=datetime.utcnow(),
+                                    last_event_type=(
+                                        current_status.last_event_type
+                                        if current_status
+                                        else None
+                                    ),
+                                )
+                                await self.storage.store_stream_status(status)
+
+                            if should_store_update:
+                                logger.debug(
+                                    f"Updated stream status for {streamer.username}: {'live' if is_live else 'offline'}"
+                                )
+                            else:
+                                logger.debug(
+                                    f"Skipped status update for {streamer.username} (preserving live status)"
+                                )
 
                     except Exception as e:
                         logger.error(
