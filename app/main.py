@@ -324,14 +324,14 @@ async def reload_default_streamers(api_key_valid: bool = Depends(verify_api_key)
     try:
         if not settings.DEFAULT_STREAMERS:
             return {"message": "No default streamers configured", "added_count": 0}
-        
+
         default_streamers = [
             s.strip() for s in settings.DEFAULT_STREAMERS.split(",") if s.strip()
         ]
-        
+
         added_count = 0
         failed_streamers = []
-        
+
         for username in default_streamers:
             try:
                 await streamer_manager.add_streamer(username)
@@ -340,18 +340,18 @@ async def reload_default_streamers(api_key_valid: bool = Depends(verify_api_key)
             except Exception as e:
                 failed_streamers.append({"username": username, "error": str(e)})
                 logger.error(f"Failed to re-add default streamer {username}: {e}")
-        
+
         result = {
             "message": f"Re-added {added_count} default streamers",
             "added_count": added_count,
             "total_configured": len(default_streamers),
         }
-        
+
         if failed_streamers:
             result["failed_streamers"] = failed_streamers
-            
+
         return result
-        
+
     except Exception as e:
         logger.error(f"Error during default streamers reload: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
