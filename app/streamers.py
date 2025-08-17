@@ -92,10 +92,35 @@ class StreamerManager:
             )
 
         except Exception as e:
-            logger.error(f"Failed to create EventSub subscription for {username}: {e}")
-            # Keep the streamer but mark as inactive
-            streamer.is_active = False
-            await self.storage.store_streamer(streamer)
+            # Check if it's a "subscription already exists" error (409)
+            if "409" in str(e) and "already exists" in str(e):
+                logger.info(f"EventSub subscription already exists for {username}, skipping creation")
+                # Try to find existing subscription ID by checking all subscriptions
+                try:
+                    subscriptions = await self.twitch_api.get_eventsub_subscriptions()
+                    for sub in subscriptions:
+                        if (sub.get("type") == "stream.online" and 
+                            sub.get("condition", {}).get("broadcaster_user_id") == streamer.user_id and
+                            sub.get("transport", {}).get("callback") == settings.WEBHOOK_URL):
+                            streamer.subscription_id = sub.get("id")
+                            streamer.is_active = True
+                            await self.storage.store_streamer(streamer)
+                            logger.info(f"Found existing subscription {sub.get('id')} for {username}")
+                            break
+                    else:
+                        # Couldn't find the subscription, mark as inactive
+                        streamer.is_active = False
+                        await self.storage.store_streamer(streamer)
+                        logger.warning(f"Could not find existing subscription for {username}")
+                except Exception as find_error:
+                    logger.error(f"Error finding existing subscription for {username}: {find_error}")
+                    streamer.is_active = False
+                    await self.storage.store_streamer(streamer)
+            else:
+                logger.error(f"Failed to create EventSub subscription for {username}: {e}")
+                # Keep the streamer but mark as inactive
+                streamer.is_active = False
+                await self.storage.store_streamer(streamer)
 
         return streamer
 
