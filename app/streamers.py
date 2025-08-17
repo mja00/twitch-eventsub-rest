@@ -76,51 +76,8 @@ class StreamerManager:
         # Store streamer
         await self.storage.store_streamer(streamer)
 
-        # Create EventSub subscription for stream.online events
-        try:
-            subscription_id = await self.twitch_api.create_eventsub_subscription(
-                event_type="stream.online",
-                condition={"broadcaster_user_id": streamer.user_id},
-            )
-
-            # Update streamer with subscription ID
-            streamer.subscription_id = subscription_id
-            await self.storage.store_streamer(streamer)
-
-            logger.info(
-                f"Created EventSub subscription {subscription_id} for {username}"
-            )
-
-        except Exception as e:
-            # Check if it's a "subscription already exists" error (409)
-            if "409" in str(e) and "already exists" in str(e):
-                logger.info(f"EventSub subscription already exists for {username}, skipping creation")
-                # Try to find existing subscription ID by checking all subscriptions
-                try:
-                    subscriptions = await self.twitch_api.get_eventsub_subscriptions()
-                    for sub in subscriptions:
-                        if (sub.get("type") == "stream.online" and 
-                            sub.get("condition", {}).get("broadcaster_user_id") == streamer.user_id and
-                            sub.get("transport", {}).get("callback") == settings.WEBHOOK_URL):
-                            streamer.subscription_id = sub.get("id")
-                            streamer.is_active = True
-                            await self.storage.store_streamer(streamer)
-                            logger.info(f"Found existing subscription {sub.get('id')} for {username}")
-                            break
-                    else:
-                        # Couldn't find the subscription, mark as inactive
-                        streamer.is_active = False
-                        await self.storage.store_streamer(streamer)
-                        logger.warning(f"Could not find existing subscription for {username}")
-                except Exception as find_error:
-                    logger.error(f"Error finding existing subscription for {username}: {find_error}")
-                    streamer.is_active = False
-                    await self.storage.store_streamer(streamer)
-            else:
-                logger.error(f"Failed to create EventSub subscription for {username}: {e}")
-                # Keep the streamer but mark as inactive
-                streamer.is_active = False
-                await self.storage.store_streamer(streamer)
+        # Create EventSub subscriptions for both stream.online and stream.offline events
+        await self._create_subscriptions_for_streamer(streamer, username)
 
         return streamer
 
@@ -130,18 +87,28 @@ class StreamerManager:
         if not streamer:
             raise ValueError(f"Streamer {username} not found")
 
-        # Remove EventSub subscription
-        if streamer.subscription_id:
+        # Remove EventSub subscriptions
+        subscription_ids = []
+        if streamer.online_subscription_id:
+            subscription_ids.append(("online", streamer.online_subscription_id))
+        if streamer.offline_subscription_id:
+            subscription_ids.append(("offline", streamer.offline_subscription_id))
+        # Backward compatibility
+        if streamer.subscription_id and streamer.subscription_id not in [
+            streamer.online_subscription_id,
+            streamer.offline_subscription_id,
+        ]:
+            subscription_ids.append(("legacy", streamer.subscription_id))
+
+        for sub_type, sub_id in subscription_ids:
             try:
-                await self.twitch_api.delete_eventsub_subscription(
-                    streamer.subscription_id
-                )
+                await self.twitch_api.delete_eventsub_subscription(sub_id)
                 logger.info(
-                    f"Deleted EventSub subscription {streamer.subscription_id} for {username}"
+                    f"Deleted {sub_type} EventSub subscription {sub_id} for {username}"
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to delete EventSub subscription for {username}: {e}"
+                    f"Failed to delete {sub_type} EventSub subscription for {username}: {e}"
                 )
 
         # Remove from storage
@@ -156,7 +123,9 @@ class StreamerManager:
                 "user_id": s.user_id,
                 "username": s.username,
                 "display_name": s.display_name,
-                "subscription_id": s.subscription_id,
+                "subscription_id": s.subscription_id,  # Deprecated
+                "online_subscription_id": s.online_subscription_id,
+                "offline_subscription_id": s.offline_subscription_id,
                 "is_active": s.is_active,
             }
             for s in streamers
@@ -364,16 +333,20 @@ class StreamerManager:
                             # Be conservative: only update if we have a definitive change
                             # or if this is the first time we're checking
                             should_store_update = True
-                            
+
                             if current_status is not None:
                                 # If we currently think they're live but API says offline,
                                 # be more cautious - could be a temporary API issue
                                 if current_status.is_live and not is_live:
                                     # Only mark as offline if EventSub hasn't updated recently
                                     # and we've had multiple API checks confirming they're offline
-                                    time_since_update = datetime.utcnow() - current_status.last_updated
+                                    time_since_update = (
+                                        datetime.utcnow() - current_status.last_updated
+                                    )
                                     if time_since_update < timedelta(minutes=15):
-                                        logger.debug(f"API says {streamer.username} is offline but recent status was live, keeping live status")
+                                        logger.debug(
+                                            f"API says {streamer.username} is offline but recent status was live, keeping live status"
+                                        )
                                         should_store_update = False
 
                             if should_store_update:
@@ -485,56 +458,60 @@ class StreamerManager:
                 if not streamer.is_active:
                     continue
 
-                # Check if subscription exists and is valid
-                subscription_valid = False
-                if streamer.subscription_id:
-                    subscription_valid = await self.twitch_api.validate_subscription(
+                # Check if subscriptions exist and are valid
+                online_valid = False
+                offline_valid = False
+
+                if streamer.online_subscription_id:
+                    online_valid = await self.twitch_api.validate_subscription(
+                        streamer.online_subscription_id
+                    )
+                elif streamer.subscription_id:  # Backward compatibility
+                    online_valid = await self.twitch_api.validate_subscription(
                         streamer.subscription_id
                     )
+                    if online_valid:
+                        streamer.online_subscription_id = streamer.subscription_id
 
-                if not subscription_valid:
-                    # Delete the old one (if it exists)
-                    if streamer.subscription_id:
-                        try:
-                            await self.twitch_api.delete_eventsub_subscription(
-                                streamer.subscription_id
-                            )
-                        except Exception as e:
-                            logger.debug(
-                                f"Could not delete old subscription for {streamer.username}: {e}"
-                            )
+                if streamer.offline_subscription_id:
+                    offline_valid = await self.twitch_api.validate_subscription(
+                        streamer.offline_subscription_id
+                    )
 
-                    logger.info(f"Creating new subscription for {streamer.username}")
+                needs_fixing = not (online_valid and offline_valid)
+
+                if needs_fixing:
+                    logger.info(
+                        f"Fixing subscriptions for {streamer.username} (online: {online_valid}, offline: {offline_valid})"
+                    )
+
+                    # Delete invalid subscriptions
+                    if not online_valid and streamer.online_subscription_id:
+                        await self._delete_subscription_safely(
+                            streamer.online_subscription_id, streamer.username, "online"
+                        )
+                        streamer.online_subscription_id = None
+                    if not offline_valid and streamer.offline_subscription_id:
+                        await self._delete_subscription_safely(
+                            streamer.offline_subscription_id,
+                            streamer.username,
+                            "offline",
+                        )
+                        streamer.offline_subscription_id = None
+
+                    # Recreate all subscriptions
                     try:
-                        # Create new EventSub subscription
-                        subscription_id = (
-                            await self.twitch_api.create_eventsub_subscription(
-                                event_type="stream.online",
-                                condition={"broadcaster_user_id": streamer.user_id},
-                            )
+                        await self._create_subscriptions_for_streamer(
+                            streamer, streamer.username
                         )
-
-                        # Update streamer with new subscription ID
-                        streamer.subscription_id = subscription_id
-                        streamer.is_active = True
-                        await self.storage.store_streamer(streamer)
-
                         fixed_count += 1
-                        logger.info(
-                            f"Fixed subscription for {streamer.username}: {subscription_id}"
-                        )
-
+                        logger.info(f"Fixed subscriptions for {streamer.username}")
                     except Exception as e:
                         logger.error(
-                            f"Failed to fix subscription for {streamer.username}: {e}"
+                            f"Failed to fix subscriptions for {streamer.username}: {e}"
                         )
-                        # Mark streamer as inactive if subscription creation fails
-                        streamer.is_active = False
-                        await self.storage.store_streamer(streamer)
                 else:
-                    logger.debug(
-                        f"Subscription valid for {streamer.username}: {streamer.subscription_id}"
-                    )
+                    logger.debug(f"All subscriptions valid for {streamer.username}")
 
             logger.info(
                 f"Subscription validation complete. Fixed {fixed_count} subscriptions."
@@ -542,3 +519,119 @@ class StreamerManager:
 
         except Exception as e:
             logger.error(f"Error during subscription validation: {e}")
+
+    async def _create_subscriptions_for_streamer(
+        self, streamer: Streamer, username: str
+    ) -> None:
+        """Create both online and offline EventSub subscriptions for a streamer"""
+        online_success = False
+        offline_success = False
+
+        # Create stream.online subscription
+        try:
+            online_subscription_id = await self.twitch_api.create_eventsub_subscription(
+                event_type="stream.online",
+                condition={"broadcaster_user_id": streamer.user_id},
+            )
+            streamer.online_subscription_id = online_subscription_id
+            streamer.subscription_id = online_subscription_id  # Backward compatibility
+            online_success = True
+            logger.info(
+                f"Created stream.online subscription {online_subscription_id} for {username}"
+            )
+
+        except Exception as e:
+            if "409" in str(e) and "already exists" in str(e):
+                online_success = await self._find_existing_subscription(
+                    streamer, username, "stream.online"
+                )
+            else:
+                logger.error(
+                    f"Failed to create stream.online subscription for {username}: {e}"
+                )
+
+        # Create stream.offline subscription
+        try:
+            offline_subscription_id = (
+                await self.twitch_api.create_eventsub_subscription(
+                    event_type="stream.offline",
+                    condition={"broadcaster_user_id": streamer.user_id},
+                )
+            )
+            streamer.offline_subscription_id = offline_subscription_id
+            offline_success = True
+            logger.info(
+                f"Created stream.offline subscription {offline_subscription_id} for {username}"
+            )
+
+        except Exception as e:
+            if "409" in str(e) and "already exists" in str(e):
+                offline_success = await self._find_existing_subscription(
+                    streamer, username, "stream.offline"
+                )
+            else:
+                logger.error(
+                    f"Failed to create stream.offline subscription for {username}: {e}"
+                )
+
+        # Update streamer status based on success
+        streamer.is_active = online_success and offline_success
+        await self.storage.store_streamer(streamer)
+
+        if not streamer.is_active:
+            logger.warning(
+                f"Streamer {username} marked as inactive due to subscription failures"
+            )
+
+    async def _find_existing_subscription(
+        self, streamer: Streamer, username: str, event_type: str
+    ) -> bool:
+        """Find existing subscription for a streamer and event type"""
+        try:
+            subscriptions = await self.twitch_api.get_eventsub_subscriptions()
+            for sub in subscriptions:
+                if (
+                    sub.get("type") == event_type
+                    and sub.get("condition", {}).get("broadcaster_user_id")
+                    == streamer.user_id
+                    and sub.get("transport", {}).get("callback") == settings.WEBHOOK_URL
+                ):
+
+                    subscription_id = sub.get("id")
+                    if event_type == "stream.online":
+                        streamer.online_subscription_id = subscription_id
+                        streamer.subscription_id = (
+                            subscription_id  # Backward compatibility
+                        )
+                    elif event_type == "stream.offline":
+                        streamer.offline_subscription_id = subscription_id
+
+                    logger.info(
+                        f"Found existing {event_type} subscription {subscription_id} for {username}"
+                    )
+                    return True
+
+            logger.warning(
+                f"Could not find existing {event_type} subscription for {username}"
+            )
+            return False
+
+        except Exception as find_error:
+            logger.error(
+                f"Error finding existing {event_type} subscription for {username}: {find_error}"
+            )
+            return False
+
+    async def _delete_subscription_safely(
+        self, subscription_id: str, username: str, sub_type: str
+    ) -> None:
+        """Safely delete a subscription with error handling"""
+        try:
+            await self.twitch_api.delete_eventsub_subscription(subscription_id)
+            logger.debug(
+                f"Deleted invalid {sub_type} subscription {subscription_id} for {username}"
+            )
+        except Exception as e:
+            logger.debug(
+                f"Could not delete {sub_type} subscription for {username}: {e}"
+            )

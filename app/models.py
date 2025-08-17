@@ -63,7 +63,9 @@ class Streamer(BaseModel):
     user_id: str
     username: str
     display_name: str
-    subscription_id: Optional[str] = None
+    subscription_id: Optional[str] = None  # Deprecated: use online_subscription_id
+    online_subscription_id: Optional[str] = None
+    offline_subscription_id: Optional[str] = None
     is_active: bool = True
 
 
