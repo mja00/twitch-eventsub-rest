@@ -65,6 +65,12 @@ curl "http://localhost:8000/streamers"
 
 # Get recent events
 curl "http://localhost:8000/events"
+
+# Get only stream.online events
+curl "http://localhost:8000/events/type/stream.online?limit=25"
+
+# Get events for specific streamer
+curl "http://localhost:8000/events/streamer/ninja?limit=10"
 ```
 
 **With API Key Protection (when enabled):**
@@ -100,6 +106,8 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 
 ### Events
 - `GET /events?limit=50` - Get recent stream events
+- `GET /events/type/{event_type}?limit=50` - Get events filtered by type (`stream.online` or `stream.offline`)
+- `GET /events/streamer/{username}?limit=50` - Get events filtered by streamer username
 - `POST /webhooks/eventsub` - EventSub webhook endpoint (used by Twitch)
 
 > **Note**: The webhook endpoint is always accessible without API key (Twitch needs access)
@@ -148,6 +156,51 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
       "last_updated": "2024-01-15T11:45:23.123456"
     }
   ],
+  "count": 1
+}
+```
+
+**Events Filtered by Type:**
+```json
+{
+  "events": [
+    {
+      "id": "event123",
+      "event_type": "stream.online",
+      "broadcaster_id": "12345",
+      "broadcaster_login": "shroud",
+      "broadcaster_name": "shroud",
+      "timestamp": "2024-01-15T11:45:23.123456",
+      "data": {
+        "type": "live",
+        "started_at": "2024-01-15T11:45:00Z"
+      }
+    }
+  ],
+  "event_type": "stream.online",
+  "count": 1
+}
+```
+
+**Events Filtered by Streamer:**
+```json
+{
+  "events": [
+    {
+      "id": "event456",
+      "event_type": "stream.offline",
+      "broadcaster_id": "67890",
+      "broadcaster_login": "ninja",
+      "broadcaster_name": "Ninja",
+      "timestamp": "2024-01-15T14:30:15.987654",
+      "data": {
+        "broadcaster_user_id": "67890",
+        "broadcaster_user_login": "ninja",
+        "broadcaster_user_name": "Ninja"
+      }
+    }
+  ],
+  "streamer": "ninja",
   "count": 1
 }
 ```
