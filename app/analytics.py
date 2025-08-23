@@ -89,7 +89,7 @@ class AnalyticsService:
     async def health_check(self) -> bool:
         """Check if MongoDB connection is healthy"""
         try:
-            if not self.client or not self.db:
+            if self.client is None or self.db is None:
                 return False
             await self.client.admin.command("ping")
             return True
@@ -304,7 +304,7 @@ class AnalyticsService:
         self, broadcaster_login: str
     ) -> Optional[Dict[str, Any]]:
         """Get statistics for a specific streamer"""
-        if not self.stats:
+        if self.stats is None:
             raise RuntimeError("Analytics service not connected to MongoDB")
 
         stats = await self.stats.find_one({"broadcaster_login": broadcaster_login})
@@ -317,7 +317,7 @@ class AnalyticsService:
         self, broadcaster_login: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
         """Get stream sessions for a broadcaster"""
-        if not self.sessions:
+        if self.sessions is None:
             raise RuntimeError("Analytics service not connected to MongoDB")
 
         cursor = self.sessions.find(
@@ -335,7 +335,7 @@ class AnalyticsService:
 
     async def get_top_streamers_by_hours(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get top streamers by total hours streamed"""
-        if not self.stats:
+        if self.stats is None:
             raise RuntimeError("Analytics service not connected to MongoDB")
 
         cursor = self.stats.find({}, sort=[("total_hours_streamed", -1)], limit=limit)
@@ -351,7 +351,7 @@ class AnalyticsService:
         self, broadcaster_login: str = None, limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Get recent stream snapshots"""
-        if not self.snapshots:
+        if self.snapshots is None:
             raise RuntimeError("Analytics service not connected to MongoDB")
 
         query = {}
@@ -369,7 +369,7 @@ class AnalyticsService:
 
     async def get_analytics_summary(self) -> Dict[str, Any]:
         """Get overall analytics summary"""
-        if not self.stats or not self.sessions or not self.snapshots:
+        if self.stats is None or self.sessions is None or self.snapshots is None:
             raise RuntimeError("Analytics service not connected to MongoDB")
 
         total_streamers = await self.stats.count_documents({})
