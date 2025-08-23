@@ -141,7 +141,7 @@ class AnalyticsService:
     async def end_stream_session(self, broadcaster_id: str, ended_at: datetime = None):
         """End the current stream session when stream goes offline"""
         if ended_at is None:
-            ended_at = datetime.utcnow()
+            ended_at = datetime.now(datetime.UTC)
 
         # Find the most recent active session
         session = await self.sessions.find_one(
@@ -164,7 +164,7 @@ class AnalyticsService:
         update_data = {
             "ended_at": ended_at,
             "duration_minutes": duration_minutes,
-            "updated_at": datetime.utcnow(),
+            "updated_at": datetime.now(datetime.UTC),
             **viewer_stats,
         }
 
@@ -216,7 +216,7 @@ class AnalyticsService:
 
         broadcaster_id = session["broadcaster_id"]
         started_at = session["started_at"]
-        ended_at = session.get("ended_at", datetime.utcnow())
+        ended_at = session.get("ended_at", datetime.now(datetime.UTC))
 
         # Find snapshots within the session time range
         pipeline = [

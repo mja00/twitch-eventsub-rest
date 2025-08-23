@@ -29,8 +29,8 @@ class StreamSession(BaseModel):
     viewer_count_samples: list[Dict[str, Any]] = Field(default_factory=list)
     max_viewers: Optional[int] = None
     avg_viewers: Optional[float] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.now(datetime.UTC))
+    updated_at: datetime = Field(default_factory=datetime.now(datetime.UTC))
 
     class Config:
         populate_by_name = True
@@ -53,7 +53,7 @@ class StreamSnapshot(BaseModel):
     language: Optional[str] = None
     thumbnail_url: Optional[str] = None
     tag_ids: list[str] = Field(default_factory=list)
-    captured_at: datetime = Field(default_factory=datetime.utcnow)
+    captured_at: datetime = Field(default_factory=datetime.now(datetime.UTC))
 
     class Config:
         populate_by_name = True
@@ -72,8 +72,8 @@ class StreamerStats(BaseModel):
     max_concurrent_viewers: int = 0
     avg_viewers_all_time: float = 0.0
     last_stream_at: Optional[datetime] = None
-    first_seen_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    first_seen_at: datetime = Field(default_factory=datetime.now(datetime.UTC))
+    updated_at: datetime = Field(default_factory=datetime.now(datetime.UTC))
 
     class Config:
         populate_by_name = True
