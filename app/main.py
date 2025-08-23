@@ -1,17 +1,16 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import Response
+from fastapi import FastAPI, Request
 import logging
 import asyncio
 from typing import Optional
 from contextlib import asynccontextmanager
 import time
 
-from app.config import settings
 from app.storage import get_storage
-from app.models import EventSubNotification, EventSubChallenge
-from app.eventsub import verify_signature
 from app.streamers import StreamerManager
-from app.auth import verify_api_key
+from app.analytics import analytics_service
+
+# Import route modules
+from app.routes import basic, webhooks, streamers, events, streams, admin, analytics
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,6 +69,9 @@ async def lifespan(app: FastAPI):
     storage = get_storage()
     await storage.connect()
 
+    # Connect analytics service
+    await analytics_service.connect()
+
     # Start initialization in background so webhook can respond immediately
     _initialization_task = asyncio.create_task(_initialize_in_background())
 
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
             pass
 
     await streamer_manager.shutdown()
+    await analytics_service.disconnect()
     await storage.disconnect()
 
 
@@ -93,6 +96,15 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Include all route modules
+app.include_router(basic.router)
+app.include_router(webhooks.router)
+app.include_router(streamers.router)
+app.include_router(events.router)
+app.include_router(streams.router)
+app.include_router(admin.router)
+app.include_router(analytics.router)
 
 
 @app.middleware("http")
@@ -112,311 +124,6 @@ async def log_requests(request: Request, call_next):
     )
 
     return response
-
-
-@app.get("/")
-async def root():
-    return {"message": "Twitch EventSub REST API"}
-
-
-@app.get("/health")
-async def health_check():
-    storage = get_storage()
-    storage_status = await storage.health_check()
-    return {
-        "status": "healthy" if storage_status else "unhealthy",
-        "storage": "connected" if storage_status else "disconnected",
-    }
-
-
-@app.post("/webhooks/eventsub")
-async def eventsub_webhook(request: Request):
-    """Handle Twitch EventSub webhook notifications"""
-    try:
-        headers = request.headers
-        body = await request.body()
-        client_ip = get_real_ip(request)
-
-        logger.debug(f"Received webhook request from {client_ip}: {headers}")
-
-        # Verify the signature
-        if not verify_signature(headers, body, settings.WEBHOOK_SECRET):
-            logger.warning(f"Invalid webhook signature from {client_ip}")
-            raise HTTPException(status_code=403, detail="Invalid signature")
-
-        # Parse the JSON payload
-        payload = await request.json()
-        logger.debug(f"Received webhook payload: {payload}")
-
-        # Handle challenge verification
-        if "challenge" in payload:
-            challenge = EventSubChallenge(**payload)
-            logger.info(
-                f"Received EventSub challenge from {client_ip}: {challenge.challenge}"
-            )
-
-            # Return raw challenge
-            challenge_value = challenge.challenge
-            return Response(
-                content=challenge_value,
-                status_code=200,
-                headers={"Content-Type": "text/plain"},
-            )
-
-        # Handle notification
-        notification = EventSubNotification(**payload)
-
-        # Process the event
-        await streamer_manager.handle_event(notification)
-
-        logger.info(f"Processed event: {notification.subscription.type}")
-        return {"status": "success"}
-
-    except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/streamers")
-async def get_streamers(api_key_valid: bool = Depends(verify_api_key)):
-    """Get list of configured streamers"""
-    return await streamer_manager.get_streamers()
-
-
-@app.post("/streamers/{username}")
-async def add_streamer(username: str, api_key_valid: bool = Depends(verify_api_key)):
-    """Add a streamer to monitor"""
-    try:
-        await streamer_manager.add_streamer(username)
-        return {"message": f"Added streamer: {username}"}
-    except Exception as e:
-        logger.error(f"Error adding streamer {username}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/streamers/{username}")
-async def remove_streamer(username: str, api_key_valid: bool = Depends(verify_api_key)):
-    """Remove a streamer from monitoring"""
-    try:
-        await streamer_manager.remove_streamer(username)
-        return {"message": f"Removed streamer: {username}"}
-    except Exception as e:
-        logger.error(f"Error removing streamer {username}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/events")
-async def get_recent_events(limit: int = 50):
-    """Get recent stream events"""
-    storage = get_storage()
-    events = await storage.get_recent_events(limit)
-    return {"events": events}
-
-
-@app.get("/events/type/{event_type}")
-async def get_events_by_type(event_type: str, limit: int = 50):
-    """Get recent stream events filtered by event type (stream.online or stream.offline)"""
-    if event_type not in ["stream.online", "stream.offline"]:
-        raise HTTPException(
-            status_code=400,
-            detail="event_type must be 'stream.online' or 'stream.offline'",
-        )
-
-    storage = get_storage()
-    all_events = await storage.get_recent_events(limit * 3)  # Get more to filter from
-
-    # Filter events by type
-    filtered_events = [
-        event for event in all_events if event.get("event_type") == event_type
-    ][:limit]
-
-    return {
-        "events": filtered_events,
-        "event_type": event_type,
-        "count": len(filtered_events),
-    }
-
-
-@app.get("/events/streamer/{username}")
-async def get_events_by_streamer(username: str, limit: int = 50):
-    """Get recent stream events filtered by streamer username"""
-    storage = get_storage()
-    all_events = await storage.get_recent_events(limit * 3)  # Get more to filter from
-
-    # Filter events by streamer (case-insensitive)
-    filtered_events = [
-        event
-        for event in all_events
-        if event.get("broadcaster_login", "").lower() == username.lower()
-    ][:limit]
-
-    return {
-        "events": filtered_events,
-        "streamer": username,
-        "count": len(filtered_events),
-    }
-
-
-@app.get("/streamers/{username}/status")
-async def get_streamer_status(username: str):
-    """Get current stream status for a streamer"""
-    try:
-        status = await streamer_manager.get_stream_status(username)
-        if not status:
-            raise HTTPException(
-                status_code=404, detail=f"Streamer {username} not found"
-            )
-        return status
-    except Exception as e:
-        logger.error(f"Error getting status for {username}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/streams/live")
-async def get_live_streams():
-    """Get all currently live streams"""
-    try:
-        live_streams = await streamer_manager.get_live_streams()
-        return {"live_streams": live_streams, "count": len(live_streams)}
-    except Exception as e:
-        logger.error(f"Error getting live streams: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/admin/cleanup-subscriptions")
-async def cleanup_subscriptions(api_key_valid: bool = Depends(verify_api_key)):
-    """Manually cleanup EventSub subscriptions for our webhook URL"""
-    try:
-        from app.twitch_api import TwitchAPI
-
-        twitch_api = TwitchAPI()
-        cleanup_count = await twitch_api.cleanup_webhook_subscriptions()
-        return {
-            "message": f"Cleaned up {cleanup_count} EventSub subscriptions",
-            "cleanup_count": cleanup_count,
-        }
-    except Exception as e:
-        logger.error(f"Error during subscription cleanup: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.get("/admin/subscriptions")
-async def get_current_subscriptions(api_key_valid: bool = Depends(verify_api_key)):
-    """Get all current EventSub subscriptions"""
-    try:
-        from app.twitch_api import TwitchAPI
-
-        twitch_api = TwitchAPI()
-        subscriptions = await twitch_api.get_eventsub_subscriptions()
-        costs = await twitch_api.get_eventsub_costs()
-
-        # Filter to show only our webhook subscriptions and add details
-        our_subscriptions = []
-        other_subscriptions = []
-        for sub in subscriptions:
-            if sub.get("transport", {}).get("callback") == settings.WEBHOOK_URL:
-                our_subscriptions.append(
-                    {
-                        "id": sub.get("id"),
-                        "type": sub.get("type"),
-                        "status": sub.get("status"),
-                        "condition": sub.get("condition"),
-                        "created_at": sub.get("created_at"),
-                        "cost": sub.get("cost", 0),
-                    }
-                )
-            else:
-                other_subscriptions.append(
-                    {
-                        "id": sub.get("id"),
-                        "type": sub.get("type"),
-                        "status": sub.get("status"),
-                        "condition": sub.get("condition"),
-                        "created_at": sub.get("created_at"),
-                        "cost": sub.get("cost", 0),
-                    }
-                )
-
-        return {
-            "subscriptions": our_subscriptions,
-            "other_subscriptions": other_subscriptions,
-            "total_subscriptions": len(subscriptions),
-            "our_subscriptions_count": len(our_subscriptions),
-            "other_subscriptions_count": len(other_subscriptions),
-            "webhook_url": settings.WEBHOOK_URL,
-            "costs": costs,
-        }
-    except Exception as e:
-        logger.error(f"Error getting subscriptions: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/admin/verify-subscriptions")
-async def verify_all_subscriptions(api_key_valid: bool = Depends(verify_api_key)):
-    """Re-verify and fix EventSub subscriptions for all tracked streamers"""
-    try:
-        await streamer_manager.validate_and_fix_subscriptions()
-        return {"message": "Subscription verification completed", "status": "success"}
-    except Exception as e:
-        logger.error(f"Error during subscription verification: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/admin/reload-default-streamers")
-async def reload_default_streamers(api_key_valid: bool = Depends(verify_api_key)):
-    """Re-add all default streamers from configuration"""
-    try:
-        if not settings.DEFAULT_STREAMERS:
-            return {"message": "No default streamers configured", "added_count": 0}
-
-        default_streamers = [
-            s.strip() for s in settings.DEFAULT_STREAMERS.split(",") if s.strip()
-        ]
-
-        added_count = 0
-        failed_streamers = []
-
-        for username in default_streamers:
-            try:
-                await streamer_manager.add_streamer(username)
-                added_count += 1
-                logger.info(f"Re-added default streamer: {username}")
-            except Exception as e:
-                failed_streamers.append({"username": username, "error": str(e)})
-                logger.error(f"Failed to re-add default streamer {username}: {e}")
-
-        result = {
-            "message": f"Re-added {added_count} default streamers",
-            "added_count": added_count,
-            "total_configured": len(default_streamers),
-        }
-
-        if failed_streamers:
-            result["failed_streamers"] = failed_streamers
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error during default streamers reload: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/admin/delete-all-subscriptions")
-async def delete_all_subscriptions(api_key_valid: bool = Depends(verify_api_key)):
-    """Delete ALL EventSub subscriptions (WARNING: affects all callback URLs)"""
-    try:
-        from app.twitch_api import TwitchAPI
-
-        twitch_api = TwitchAPI()
-        deleted_count = await twitch_api.delete_all_subscriptions()
-        return {
-            "message": f"Deleted {deleted_count} total EventSub subscriptions",
-            "deleted_count": deleted_count,
-            "warning": "This action deleted ALL subscriptions, not just our webhook URL",
-        }
-    except Exception as e:
-        logger.error(f"Error during all subscriptions deletion: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 if __name__ == "__main__":

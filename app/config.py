@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     STORAGE_TYPE: str = os.getenv("STORAGE_TYPE", "memory")  # "redis" or "memory"
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+    # MongoDB configuration for analytics
+    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "twitch_analytics")
+
     # Default streamers to monitor
     DEFAULT_STREAMERS: str = os.getenv("DEFAULT_STREAMERS", "")
 

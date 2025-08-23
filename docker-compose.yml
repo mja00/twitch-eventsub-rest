@@ -8,6 +8,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      mongodb:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
@@ -31,5 +33,26 @@ services:
       start_period: 10s
     command: redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
 
+  mongodb:
+    image: mongo:7
+    env_file:
+      - .env
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGODB_DATABASE}
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   redis_data:
+  mongodb_data:
+  mongodb_config:
