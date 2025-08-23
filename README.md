@@ -1,21 +1,24 @@
 # Twitch EventSub REST API
 
-A Python FastAPI server that listens to Twitch's EventSub system for stream live events. The server can monitor multiple Twitch streamers and store events in either Redis or in-memory for testing.
+A Python FastAPI server that listens to Twitch's EventSub system for stream live events. The server can monitor multiple Twitch streamers, store events in Redis or in-memory for testing, and provides comprehensive analytics using MongoDB to track stream durations, viewer statistics, and historical data.
 
 ## Features
 
 - 🎮 **Twitch EventSub Integration**: Listen to stream.online and stream.offline events
 - 🔧 **Flexible Storage**: Redis for production, in-memory for testing
+- 📊 **Analytics & MongoDB**: Track stream duration, viewer statistics, and historical data
 - 📡 **REST API**: Manage streamers and view events via HTTP endpoints
 - 🔍 **Live Stream Status**: Real-time status checking for any Twitch streamer
 - ⏰ **Smart Updates**: Background refresh of live stream data every 5 minutes
 - 🚀 **Startup Initialization**: Populate stream status and validate subscriptions on server start
-- 🐳 **Docker Ready**: Complete Docker setup with docker-compose
+- 🐳 **Docker Ready**: Complete Docker setup with MongoDB and Redis
 - 🔐 **Secure**: Webhook signature verification and optional API key authentication
+- 📈 **Stream Analytics**: Comprehensive stream session tracking with viewer stats
 - 📊 **Event History**: Store and retrieve recent stream events
 - 🔧 **Admin Tools**: Complete subscription management and monitoring endpoints
 - ⚡ **Fast Startup**: Immediate webhook response for challenge verification
 - 🛡️ **Robust**: Automatic subscription validation and recovery
+- 🎨 **Code Quality**: Formatted with Black for consistent styling
 
 ## Quick Start
 
@@ -71,6 +74,18 @@ curl "http://localhost:8000/events/type/stream.online?limit=25"
 
 # Get events for specific streamer
 curl "http://localhost:8000/events/streamer/ninja?limit=10"
+
+# Get analytics summary
+curl "http://localhost:8000/analytics/summary"
+
+# Get streamer analytics
+curl "http://localhost:8000/analytics/streamer/shroud/stats"
+
+# Get stream sessions history
+curl "http://localhost:8000/analytics/streamer/shroud/sessions?limit=10"
+
+# Get top streamers by hours streamed
+curl "http://localhost:8000/analytics/top-streamers/hours?limit=5"
 ```
 
 **With API Key Protection (when enabled):**
@@ -109,6 +124,13 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 - `GET /events/type/{event_type}?limit=50` - Get events filtered by type (`stream.online` or `stream.offline`)
 - `GET /events/streamer/{username}?limit=50` - Get events filtered by streamer username
 - `POST /webhooks/eventsub` - EventSub webhook endpoint (used by Twitch)
+
+### Analytics
+- `GET /analytics/summary` - Overall analytics summary
+- `GET /analytics/streamer/{broadcaster_login}/stats` - Individual streamer statistics
+- `GET /analytics/streamer/{broadcaster_login}/sessions?limit=50` - Stream session history
+- `GET /analytics/top-streamers/hours?limit=10` - Top streamers by hours streamed
+- `GET /analytics/snapshots?broadcaster_login={username}&limit=100` - Recent stream snapshots
 
 > **Note**: The webhook endpoint is always accessible without API key (Twitch needs access)
 
@@ -217,6 +239,10 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 | `WEBHOOK_URL` | Public URL for EventSub webhooks | Required for production |
 | `STORAGE_TYPE` | Storage backend (`redis` or `memory`) | `memory` |
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
+| `MONGODB_URL` | MongoDB connection URL for analytics | `mongodb://localhost:27017` |
+| `MONGODB_DATABASE` | MongoDB database name for analytics | `twitch_analytics` |
+| `MONGO_INITDB_ROOT_USERNAME` | MongoDB root username (Docker) | Required for Docker |
+| `MONGO_INITDB_ROOT_PASSWORD` | MongoDB root password (Docker) | Required for Docker |
 | `DEFAULT_STREAMERS` | Comma-separated list of streamers to monitor | Empty |
 | `REQUIRE_API_KEY` | Enable API key authentication (`true` or `false`) | `false` |
 | `API_KEY` | API key for protected endpoints | Empty |
@@ -256,6 +282,9 @@ WEBHOOK_URL=https://abc123.ngrok.io/webhooks/eventsub
 # Install dependencies
 pip install -r requirements.txt
 
+# Format code with Black (optional but recommended)
+black app/
+
 # Run in development mode
 STORAGE_TYPE=memory uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -264,13 +293,24 @@ STORAGE_TYPE=memory uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 app/
-├── main.py          # FastAPI application and routes
-├── config.py        # Configuration and settings
-├── models.py        # Pydantic models
-├── storage.py       # Storage abstraction (Redis/Memory)
-├── streamers.py     # Streamer management
-├── twitch_api.py    # Twitch API client
-└── eventsub.py      # EventSub webhook verification
+├── main.py              # FastAPI application and middleware
+├── config.py            # Configuration and settings
+├── models.py            # Pydantic models for core data
+├── analytics_models.py  # MongoDB/Analytics data models
+├── storage.py           # Storage abstraction (Redis/Memory)
+├── analytics.py         # MongoDB analytics service
+├── streamers.py         # Streamer management and EventSub
+├── twitch_api.py        # Twitch API client
+├── eventsub.py          # EventSub webhook verification
+├── auth.py              # API key authentication
+└── routes/              # Organized API route modules
+    ├── basic.py         # Health and root endpoints
+    ├── webhooks.py      # EventSub webhook handling
+    ├── streamers.py     # Streamer management endpoints
+    ├── events.py        # Event history endpoints
+    ├── streams.py       # Live stream endpoints
+    ├── admin.py         # Admin/management endpoints
+    └── analytics.py     # Analytics and statistics endpoints
 ```
 
 ## Event Types
@@ -310,7 +350,72 @@ Twitch EventSub → Webhook → Update Storage → Background Refresh → API Re
               Instant Status Updates
 ```
 
+## Analytics Features
+
+### Stream Session Tracking
+The system automatically tracks comprehensive stream session data:
+
+- **Session Duration**: Precise start/end times with calculated duration in minutes
+- **Viewer Statistics**: Real-time snapshots of viewer counts every 5 minutes
+- **Stream Metadata**: Game categories, stream titles, language, and tags
+- **Historical Data**: Complete session history with searchable records
+
+### Analytics Data Models
+
+**Stream Sessions**: Individual streaming sessions with start/end times, duration, and viewer stats
+**Stream Snapshots**: Regular captures of live stream data (viewer count, game, title)
+**Streamer Statistics**: Aggregated stats per streamer (total hours, average viewers, stream count)
+
+### Analytics Endpoints
+
+```bash
+# Get overall platform statistics
+GET /analytics/summary
+{
+  "total_streamers_tracked": 45,
+  "total_stream_sessions": 1250,
+  "total_snapshots_captured": 15000,
+  "total_hours_streamed": 3420.5,
+  "avg_hours_per_streamer": 76.0
+}
+
+# Get individual streamer analytics
+GET /analytics/streamer/shroud/stats
+{
+  "broadcaster_login": "shroud",
+  "total_streams": 125,
+  "total_hours_streamed": 340.5,
+  "avg_stream_duration_minutes": 163.2,
+  "max_concurrent_viewers": 85000,
+  "avg_viewers_all_time": 32500.5,
+  "last_stream_at": "2024-01-15T14:30:00Z"
+}
+
+# Get stream session history with viewer data
+GET /analytics/streamer/shroud/sessions?limit=5
+{
+  "sessions": [
+    {
+      "started_at": "2024-01-15T12:00:00Z",
+      "ended_at": "2024-01-15T15:30:00Z", 
+      "duration_minutes": 210,
+      "max_viewers": 45000,
+      "avg_viewers": 38500.5,
+      "category_name": "VALORANT",
+      "title": "Ranked grind to Radiant"
+    }
+  ]
+}
+```
+
 ## Storage
+
+### MongoDB (Analytics)
+- **Stream Sessions**: Detailed session records with viewer statistics
+- **Stream Snapshots**: Time-series data for viewer counts and metadata  
+- **Streamer Stats**: Aggregated statistics and performance metrics
+- **Indexes**: Optimized for time-range queries and streamer filtering
+- **Time-based Linking**: Sessions automatically linked to snapshots for accurate stats
 
 ### Redis (Production)
 - Persistent storage across restarts
@@ -328,11 +433,13 @@ Twitch EventSub → Webhook → Update Storage → Background Refresh → API Re
 
 The included `docker-compose.yml` provides:
 
-- **FastAPI application** with health checks
-- **Redis** with persistence
-- **Volume mounting** for Redis data
-- **Environment configuration**
-- **Automatic restarts**
+- **FastAPI application** with health checks and dependency management
+- **Redis** with persistence and password protection
+- **MongoDB** for analytics with secure internal networking
+- **Volume mounting** for persistent data storage
+- **Environment configuration** with .env file support
+- **Automatic restarts** and health monitoring
+- **Network isolation** (MongoDB only accessible within Docker stack)
 
 ```bash
 # Start services
