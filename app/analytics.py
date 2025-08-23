@@ -256,17 +256,15 @@ class AnalyticsService:
 
     async def _update_streamer_stats(self, broadcaster_id: str):
         """Update aggregated streamer statistics"""
-        # Calculate stats from all sessions
-        pipeline = [
-            {"$match": {"broadcaster_id": broadcaster_id, "ended_at": {"$ne": None}}},
+        # Calculate stats from all sessions (completed only for duration stats)
+        session_pipeline = [
+            {"$match": {"broadcaster_id": broadcaster_id}},
             {
                 "$group": {
                     "_id": None,
-                    "total_streams": {"$sum": 1},
-                    "total_minutes": {"$sum": "$duration_minutes"},
-                    "avg_duration": {"$avg": "$duration_minutes"},
-                    "max_viewers": {"$max": "$max_viewers"},
-                    "avg_viewers": {"$avg": "$avg_viewers"},
+                    "total_streams": {"$sum": {"$cond": [{"$ne": ["$ended_at", None]}, 1, 0]}},
+                    "total_minutes": {"$sum": {"$ifNull": ["$duration_minutes", 0]}},
+                    "avg_duration": {"$avg": {"$ifNull": ["$duration_minutes", None]}},
                     "last_stream": {"$max": "$started_at"},
                     "first_stream": {"$min": "$started_at"},
                     "broadcaster_login": {"$first": "$broadcaster_login"},
@@ -275,23 +273,44 @@ class AnalyticsService:
             },
         ]
 
-        result = await self.sessions.aggregate(pipeline).to_list(1)
-        if not result:
+        # Calculate viewer stats from snapshots directly
+        viewer_pipeline = [
+            {
+                "$match": {
+                    "broadcaster_id": broadcaster_id,
+                    "is_live": True,
+                    "viewer_count": {"$ne": None},
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "max_viewers": {"$max": "$viewer_count"},
+                    "avg_viewers": {"$avg": "$viewer_count"},
+                }
+            },
+        ]
+
+        session_result = await self.sessions.aggregate(session_pipeline).to_list(1)
+        viewer_result = await self.snapshots.aggregate(viewer_pipeline).to_list(1)
+
+        if not session_result:
             return
 
-        data = result[0]
+        session_data = session_result[0]
+        viewer_data = viewer_result[0] if viewer_result else {}
 
         stats = StreamerStats(
             broadcaster_id=broadcaster_id,
-            broadcaster_login=data["broadcaster_login"],
-            broadcaster_name=data["broadcaster_name"],
-            total_streams=data["total_streams"],
-            total_hours_streamed=round(data["total_minutes"] / 60, 2),
-            avg_stream_duration_minutes=round(data["avg_duration"], 2),
-            max_concurrent_viewers=data["max_viewers"] or 0,
-            avg_viewers_all_time=round(data["avg_viewers"] or 0, 2),
-            last_stream_at=data["last_stream"],
-            first_seen_at=data["first_stream"],
+            broadcaster_login=session_data["broadcaster_login"],
+            broadcaster_name=session_data["broadcaster_name"],
+            total_streams=session_data["total_streams"],
+            total_hours_streamed=round(session_data["total_minutes"] / 60, 2),
+            avg_stream_duration_minutes=round(session_data["avg_duration"] or 0, 2),
+            max_concurrent_viewers=viewer_data.get("max_viewers", 0) or 0,
+            avg_viewers_all_time=round(viewer_data.get("avg_viewers", 0) or 0, 2),
+            last_stream_at=session_data["last_stream"],
+            first_seen_at=session_data["first_stream"],
         )
 
         await self.stats.update_one(
@@ -366,6 +385,16 @@ class AnalyticsService:
             snapshots.append(snapshot)
 
         return snapshots
+
+    async def recalculate_streamer_stats(self, broadcaster_id: str) -> bool:
+        """Force recalculation of streamer statistics"""
+        try:
+            await self._update_streamer_stats(broadcaster_id)
+            logger.info(f"Recalculated stats for broadcaster {broadcaster_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to recalculate stats for broadcaster {broadcaster_id}: {e}")
+            return False
 
     async def get_analytics_summary(self) -> Dict[str, Any]:
         """Get overall analytics summary"""

@@ -92,3 +92,40 @@ async def get_recent_snapshots(
         logger.error(f"Error getting snapshots: {type(e).__name__}: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/streamer/{broadcaster_login}/recalculate")
+async def recalculate_streamer_stats(broadcaster_login: str):
+    """Force recalculation of statistics for a specific streamer"""
+    try:
+        # First, get the streamer stats to find broadcaster_id
+        existing_stats = await analytics_service.get_streamer_stats(broadcaster_login)
+        if not existing_stats:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No analytics data found for {broadcaster_login}",
+            )
+        
+        broadcaster_id = existing_stats["broadcaster_id"]
+        success = await analytics_service.recalculate_streamer_stats(broadcaster_id)
+        
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to recalculate stats for {broadcaster_login}"
+            )
+        
+        # Return the updated stats
+        updated_stats = await analytics_service.get_streamer_stats(broadcaster_login)
+        return {
+            "message": f"Successfully recalculated stats for {broadcaster_login}",
+            "stats": updated_stats
+        }
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
+    except Exception as e:
+        logger.error(
+            f"Error recalculating stats for {broadcaster_login}: {type(e).__name__}: {str(e)}"
+        )
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
