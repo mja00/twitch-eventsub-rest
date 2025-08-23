@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from motor.motor_asyncio import (
@@ -23,28 +24,78 @@ class AnalyticsService:
         self.snapshots: Optional[AsyncIOMotorCollection] = None
         self.stats: Optional[AsyncIOMotorCollection] = None
 
-    async def connect(self):
-        """Initialize MongoDB connection"""
-        try:
-            self.client = AsyncIOMotorClient(settings.MONGODB_URL)
-            self.db = self.client[settings.MONGODB_DATABASE]
+    async def connect(self, max_retries: int = 5, retry_delay: int = 2):
+        """Initialize MongoDB connection with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                logger.info(
+                    f"Attempting MongoDB connection (attempt {attempt + 1}/{max_retries})"
+                )
+                # Log connection details (without exposing password)
+                safe_url = (
+                    settings.MONGODB_URL.replace(
+                        settings.MONGODB_URL.split("@")[0].split("//")[1], "***:***"
+                    )
+                    if "@" in settings.MONGODB_URL
+                    else settings.MONGODB_URL
+                )
+                logger.info(f"MongoDB URL: {safe_url}")
+                logger.info(f"MongoDB Database: {settings.MONGODB_DATABASE}")
 
-            self.sessions = self.db["stream_sessions"]
-            self.snapshots = self.db["stream_snapshots"]
-            self.stats = self.db["streamer_stats"]
+                self.client = AsyncIOMotorClient(
+                    settings.MONGODB_URL,
+                    serverSelectionTimeoutMS=5000,  # 5 second timeout
+                )
+                self.db = self.client[settings.MONGODB_DATABASE]
 
-            # Create indexes for better performance
-            await self._create_indexes()
+                # Test the connection
+                await self.client.admin.command("ping")
+                logger.info("MongoDB ping successful")
 
-            logger.info("MongoDB analytics service connected successfully")
-        except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
-            raise
+                # Test database access
+                await self.db.list_collection_names()
+                logger.info(
+                    f"Successfully accessed database: {settings.MONGODB_DATABASE}"
+                )
+
+                self.sessions = self.db["stream_sessions"]
+                self.snapshots = self.db["stream_snapshots"]
+                self.stats = self.db["streamer_stats"]
+
+                # Create indexes for better performance
+                await self._create_indexes()
+
+                logger.info("MongoDB analytics service connected successfully")
+                return
+
+            except Exception as e:
+                logger.error(
+                    f"MongoDB connection attempt {attempt + 1} failed: {type(e).__name__}: {e}"
+                )
+                if attempt == max_retries - 1:
+                    logger.error(
+                        f"Failed to connect to MongoDB after {max_retries} attempts"
+                    )
+                    raise
+                else:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
 
     async def disconnect(self):
         """Close MongoDB connection"""
         if self.client:
             self.client.close()
+
+    async def health_check(self) -> bool:
+        """Check if MongoDB connection is healthy"""
+        try:
+            if not self.client or not self.db:
+                return False
+            await self.client.admin.command("ping")
+            return True
+        except Exception as e:
+            logger.error(f"MongoDB health check failed: {e}")
+            return False
 
     async def _create_indexes(self):
         """Create necessary indexes for collections"""
@@ -253,6 +304,9 @@ class AnalyticsService:
         self, broadcaster_login: str
     ) -> Optional[Dict[str, Any]]:
         """Get statistics for a specific streamer"""
+        if not self.stats:
+            raise RuntimeError("Analytics service not connected to MongoDB")
+
         stats = await self.stats.find_one({"broadcaster_login": broadcaster_login})
         if stats:
             stats["_id"] = str(stats["_id"])
@@ -263,6 +317,9 @@ class AnalyticsService:
         self, broadcaster_login: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
         """Get stream sessions for a broadcaster"""
+        if not self.sessions:
+            raise RuntimeError("Analytics service not connected to MongoDB")
+
         cursor = self.sessions.find(
             {"broadcaster_login": broadcaster_login},
             sort=[("started_at", -1)],
@@ -278,6 +335,9 @@ class AnalyticsService:
 
     async def get_top_streamers_by_hours(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get top streamers by total hours streamed"""
+        if not self.stats:
+            raise RuntimeError("Analytics service not connected to MongoDB")
+
         cursor = self.stats.find({}, sort=[("total_hours_streamed", -1)], limit=limit)
 
         streamers = []
@@ -291,6 +351,9 @@ class AnalyticsService:
         self, broadcaster_login: str = None, limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Get recent stream snapshots"""
+        if not self.snapshots:
+            raise RuntimeError("Analytics service not connected to MongoDB")
+
         query = {}
         if broadcaster_login:
             query["broadcaster_login"] = broadcaster_login
@@ -306,6 +369,9 @@ class AnalyticsService:
 
     async def get_analytics_summary(self) -> Dict[str, Any]:
         """Get overall analytics summary"""
+        if not self.stats or not self.sessions or not self.snapshots:
+            raise RuntimeError("Analytics service not connected to MongoDB")
+
         total_streamers = await self.stats.count_documents({})
         total_sessions = await self.sessions.count_documents({})
         total_snapshots = await self.snapshots.count_documents({})

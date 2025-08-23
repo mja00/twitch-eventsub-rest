@@ -1,4 +1,5 @@
 import logging
+import traceback
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 
@@ -15,7 +16,8 @@ async def get_analytics_summary():
         summary = await analytics_service.get_analytics_summary()
         return summary
     except Exception as e:
-        logger.error(f"Error getting analytics summary: {str(e)}")
+        logger.error(f"Error getting analytics summary: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -30,8 +32,13 @@ async def get_streamer_stats(broadcaster_login: str):
                 detail=f"No analytics data found for {broadcaster_login}",
             )
         return stats
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
-        logger.error(f"Error getting streamer stats for {broadcaster_login}: {str(e)}")
+        logger.error(
+            f"Error getting streamer stats for {broadcaster_login}: {type(e).__name__}: {str(e)}"
+        )
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -48,7 +55,10 @@ async def get_stream_sessions(
             "count": len(sessions),
         }
     except Exception as e:
-        logger.error(f"Error getting stream sessions for {broadcaster_login}: {str(e)}")
+        logger.error(
+            f"Error getting stream sessions for {broadcaster_login}: {type(e).__name__}: {str(e)}"
+        )
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -59,7 +69,8 @@ async def get_top_streamers_by_hours(limit: int = Query(10, ge=1, le=50)):
         streamers = await analytics_service.get_top_streamers_by_hours(limit)
         return {"top_streamers": streamers, "count": len(streamers)}
     except Exception as e:
-        logger.error(f"Error getting top streamers: {str(e)}")
+        logger.error(f"Error getting top streamers: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -78,5 +89,6 @@ async def get_recent_snapshots(
             "broadcaster_login": broadcaster_login,
         }
     except Exception as e:
-        logger.error(f"Error getting snapshots: {str(e)}")
+        logger.error(f"Error getting snapshots: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
