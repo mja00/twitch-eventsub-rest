@@ -81,6 +81,9 @@ curl "http://localhost:8000/analytics/summary"
 # Get streamer analytics
 curl "http://localhost:8000/analytics/streamer/shroud/stats"
 
+# Force recalculate stats for a streamer (useful for ongoing streams)
+curl -X POST "http://localhost:8000/analytics/streamer/shroud/recalculate"
+
 # Get stream sessions history
 curl "http://localhost:8000/analytics/streamer/shroud/sessions?limit=10"
 
@@ -128,6 +131,7 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 ### Analytics
 - `GET /analytics/summary` - Overall analytics summary
 - `GET /analytics/streamer/{broadcaster_login}/stats` - Individual streamer statistics
+- `POST /analytics/streamer/{broadcaster_login}/recalculate` - Force recalculate stats (useful for ongoing streams)
 - `GET /analytics/streamer/{broadcaster_login}/sessions?limit=50` - Stream session history
 - `GET /analytics/top-streamers/hours?limit=10` - Top streamers by hours streamed
 - `GET /analytics/snapshots?broadcaster_login={username}&limit=100` - Recent stream snapshots
@@ -513,9 +517,15 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 - Automatic validation prevents most duplicate scenarios
 
 **Missing Subscriptions:**
-- Re-run subscription verification endpoint
+- Re-run subscription verification endpoint (`POST /admin/verify-subscriptions`)
 - Check streamer status (`GET /streamers`) to see if streamers are marked as inactive
 - Review logs for subscription creation errors
+- Fixed: EventSub pagination now retrieves all subscriptions, not just first page
+
+**Viewer Statistics Issues:**
+- Use the recalculate endpoint (`POST /analytics/streamer/{username}/recalculate`) to refresh stats
+- Fixed: Viewer stats now calculated from snapshots for ongoing streams, not just completed sessions
+- Analytics include both completed and ongoing stream data
 
 ## Security
 

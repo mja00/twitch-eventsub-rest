@@ -12,19 +12,31 @@ This is a **Twitch EventSub REST API** built with FastAPI that monitors Twitch s
 - **Pydantic** (2.5.0) - Data validation and serialization
 - **HTTPX** (0.25.2) - HTTP client for Twitch API calls
 - **Python-dotenv** (1.0.0) - Environment variable management
+- **MongoDB Motor** (3.3.2) - Async MongoDB driver for analytics
+- **PyMongo** (4.6.0) - MongoDB integration and aggregation
 
 ## Project Structure
 
 ```
 app/
-├── main.py          # FastAPI application, routes, and middleware
-├── config.py        # Configuration management and settings
-├── models.py        # Pydantic models for data validation
-├── storage.py       # Storage abstraction (Redis/Memory)
-├── streamers.py     # Streamer management and EventSub subscriptions
-├── twitch_api.py    # Twitch API client and authentication
-├── eventsub.py      # EventSub webhook verification
-└── auth.py          # API key authentication
+├── main.py              # FastAPI application, routes, and middleware
+├── config.py            # Configuration management and settings
+├── models.py            # Pydantic models for core data validation
+├── analytics_models.py  # MongoDB/Analytics Pydantic models
+├── storage.py           # Storage abstraction (Redis/Memory)
+├── analytics.py         # MongoDB analytics service and calculations
+├── streamers.py         # Streamer management and EventSub subscriptions
+├── twitch_api.py        # Twitch API client and authentication
+├── eventsub.py          # EventSub webhook verification
+├── auth.py              # API key authentication
+└── routes/              # Organized API route modules
+    ├── basic.py         # Health and root endpoints
+    ├── webhooks.py      # EventSub webhook handling
+    ├── streamers.py     # Streamer management endpoints
+    ├── events.py        # Event history endpoints
+    ├── streams.py       # Live stream endpoints
+    ├── admin.py         # Admin/management endpoints
+    └── analytics.py     # Analytics and statistics endpoints
 ```
 
 ## Core Functionality
@@ -47,13 +59,22 @@ app/
 - **Live Streams**: `/streams/live` - Get all currently live streams
 - **Streamer Management**: `POST/DELETE /streamers/{username}` - Add/remove streamers
 - **Events**: `/events` - Get stored events with filtering options
+- **Analytics**: `/analytics/*` - Comprehensive stream analytics and statistics
 - **Admin**: `/admin/*` - Subscription management and monitoring
 
 ### 4. Storage System
-- **Redis**: Production storage with persistence
+- **Redis**: Production storage with persistence for streamer configs and events
 - **Memory**: Development/testing storage (non-persistent)
+- **MongoDB**: Analytics storage for stream sessions, snapshots, and aggregated statistics
 - Automatic cleanup of old events (keeps last 1000)
 - Efficient data structures for fast queries
+
+### 5. Analytics System
+- **Stream Session Tracking**: Complete session lifecycle from online to offline events
+- **Real-time Snapshots**: Viewer count and metadata captured every 5 minutes during streams
+- **Aggregated Statistics**: Total hours, average viewers, max concurrent viewers per streamer
+- **Historical Data**: Searchable stream history with detailed viewer statistics
+- **MongoDB Integration**: Optimized collections with proper indexing for time-series data
 
 ## Development Guidelines
 
@@ -180,6 +201,10 @@ async def new_operation(self, key: str, data: dict) -> bool:
 ### Optional Environment Variables
 - `STORAGE_TYPE` - `redis` or `memory` (default: `memory`)
 - `REDIS_URL` - Redis connection URL (default: `redis://localhost:6379`)
+- `MONGODB_URL` - MongoDB connection URL (default: `mongodb://localhost:27017`)
+- `MONGODB_DATABASE` - MongoDB database name (default: `twitch_analytics`)
+- `MONGO_INITDB_ROOT_USERNAME` - MongoDB root username for Docker
+- `MONGO_INITDB_ROOT_PASSWORD` - MongoDB root password for Docker
 - `DEFAULT_STREAMERS` - Comma-separated list of streamers to monitor
 - `REQUIRE_API_KEY` - Enable API key authentication (`true` or `false`)
 - `API_KEY` - API key for protected endpoints
@@ -212,16 +237,28 @@ async def new_operation(self, key: str, data: dict) -> bool:
    - Use admin endpoints to verify subscriptions
    - Check Twitch application permissions
    - Verify webhook URL is HTTPS in production
+   - Fixed: Subscription validation now handles pagination correctly (retrieves all pages)
+   - Fixed: Inactive streamers are now included in subscription validation
 
 3. **Storage Connection Issues**
    - Check Redis connection settings
    - Verify Redis is running and accessible
    - Check network connectivity
+   - Check MongoDB connection for analytics features
 
 4. **API Authentication Issues**
    - Verify API key configuration
    - Check Authorization header format
    - Ensure `REQUIRE_API_KEY` is set correctly
+
+5. **Analytics Issues**
+   - Use recalculate endpoint for ongoing streams with incorrect viewer stats
+   - Fixed: Viewer statistics now calculated from snapshots, not just completed sessions
+   - Fixed: DateTime compatibility issues resolved (now uses timezone.utc)
+
+6. **Python Compatibility Issues**
+   - Fixed: Replaced datetime.UTC with timezone.utc for broader Python version support
+   - Fixed: Proper factory functions for Pydantic default datetime fields
 
 ### Debugging Tips
 
@@ -300,22 +337,28 @@ async def new_operation(self, key: str, data: dict) -> bool:
 
 ### Key Files
 - `app/main.py` - Main application and routes
-- `app/storage.py` - Storage abstraction layer
+- `app/storage.py` - Storage abstraction layer (Redis/Memory)
+- `app/analytics.py` - MongoDB analytics service
 - `app/streamers.py` - Streamer management logic
-- `app/twitch_api.py` - Twitch API integration
+- `app/twitch_api.py` - Twitch API integration with pagination support
 - `app/eventsub.py` - Webhook verification
+- `app/analytics_models.py` - MongoDB data models
 
 ### Key Classes
 - `StreamerManager` - Manages streamers and subscriptions
+- `AnalyticsService` - MongoDB analytics operations
 - `Storage` - Abstract storage interface
 - `RedisStorage` / `MemoryStorage` - Storage implementations
-- `TwitchAPI` - Twitch API client
+- `TwitchAPI` - Twitch API client with pagination support
+- `StreamSession` / `StreamSnapshot` / `StreamerStats` - Analytics data models
 
 ### Key Functions
 - `verify_signature()` - Webhook signature verification
 - `verify_api_key()` - API key authentication
 - `get_storage()` - Storage dependency injection
 - `get_real_ip()` - Client IP extraction
+- `recalculate_streamer_stats()` - Force refresh analytics for ongoing streams
+- `_update_streamer_stats()` - Calculate stats from sessions and snapshots
 
 Remember to always test changes thoroughly and maintain backward compatibility when possible. The application is designed to be robust and handle various error scenarios gracefully.
 
@@ -349,3 +392,5 @@ This file itself should be maintained and updated as the project evolves:
 - Use consistent formatting and structure across both files
 - Update version numbers and dependency information when they change
 - Maintain the same level of detail and clarity in both documents
+
+- Always use Black to format after any changes
