@@ -614,6 +614,7 @@ class StreamerManager:
         """Find existing subscription for a streamer and event type"""
         try:
             subscriptions = await self.twitch_api.get_eventsub_subscriptions()
+            
             for sub in subscriptions:
                 if (
                     sub.get("type") == event_type

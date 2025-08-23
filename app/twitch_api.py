@@ -162,10 +162,28 @@ class TwitchAPI:
                 raise
 
     async def get_eventsub_subscriptions(self) -> List[Dict[str, Any]]:
-        """Get all EventSub subscriptions"""
+        """Get all EventSub subscriptions (handles pagination)"""
         try:
-            response = await self._make_request("GET", "eventsub/subscriptions")
-            return response.get("data", [])
+            all_subscriptions = []
+            cursor = None
+
+            while True:
+                endpoint = "eventsub/subscriptions"
+                if cursor:
+                    endpoint += f"?after={cursor}"
+
+                response = await self._make_request("GET", endpoint)
+                subscriptions = response.get("data", [])
+                all_subscriptions.extend(subscriptions)
+
+                # Check if there are more pages
+                pagination = response.get("pagination", {})
+                cursor = pagination.get("cursor")
+
+                if not cursor:
+                    break
+
+            return all_subscriptions
         except Exception as e:
             logger.error(f"Error getting EventSub subscriptions: {e}")
             return []
