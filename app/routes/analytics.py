@@ -105,21 +105,21 @@ async def recalculate_streamer_stats(broadcaster_login: str):
                 status_code=404,
                 detail=f"No analytics data found for {broadcaster_login}",
             )
-        
+
         broadcaster_id = existing_stats["broadcaster_id"]
         success = await analytics_service.recalculate_streamer_stats(broadcaster_id)
-        
+
         if not success:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to recalculate stats for {broadcaster_login}"
+                detail=f"Failed to recalculate stats for {broadcaster_login}",
             )
-        
+
         # Return the updated stats
         updated_stats = await analytics_service.get_streamer_stats(broadcaster_login)
         return {
             "message": f"Successfully recalculated stats for {broadcaster_login}",
-            "stats": updated_stats
+            "stats": updated_stats,
         }
     except HTTPException:
         raise  # Re-raise HTTP exceptions as-is

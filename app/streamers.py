@@ -328,7 +328,9 @@ class StreamerManager:
                         should_update = (
                             current_status is None
                             or current_status.is_live
-                            or (datetime.now(timezone.utc) - current_status.last_updated)
+                            or (
+                                datetime.now(timezone.utc) - current_status.last_updated
+                            )
                             > timedelta(minutes=10)
                         )
 
@@ -350,7 +352,8 @@ class StreamerManager:
                                     # Only mark as offline if EventSub hasn't updated recently
                                     # and we've had multiple API checks confirming they're offline
                                     time_since_update = (
-                                        datetime.now(timezone.utc) - current_status.last_updated
+                                        datetime.now(timezone.utc)
+                                        - current_status.last_updated
                                     )
                                     if time_since_update < timedelta(minutes=15):
                                         logger.debug(
@@ -470,12 +473,14 @@ class StreamerManager:
 
             fixed_count = 0
             for streamer in streamers:
-                if not streamer.is_active:
-                    continue
+                # Don't skip inactive streamers during validation - they might have valid subscriptions
+                # that just need to be properly mapped
 
                 # Check if subscriptions exist and are valid
                 online_valid = False
                 offline_valid = False
+
+                updated_streamer = False
 
                 if streamer.online_subscription_id:
                     online_valid = await self.twitch_api.validate_subscription(
@@ -487,11 +492,16 @@ class StreamerManager:
                     )
                     if online_valid:
                         streamer.online_subscription_id = streamer.subscription_id
+                        updated_streamer = True
 
                 if streamer.offline_subscription_id:
                     offline_valid = await self.twitch_api.validate_subscription(
                         streamer.offline_subscription_id
                     )
+
+                # Save any backward compatibility updates
+                if updated_streamer:
+                    await self.storage.store_streamer(streamer)
 
                 needs_fixing = not (online_valid and offline_valid)
 

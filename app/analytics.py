@@ -262,7 +262,9 @@ class AnalyticsService:
             {
                 "$group": {
                     "_id": None,
-                    "total_streams": {"$sum": {"$cond": [{"$ne": ["$ended_at", None]}, 1, 0]}},
+                    "total_streams": {
+                        "$sum": {"$cond": [{"$ne": ["$ended_at", None]}, 1, 0]}
+                    },
                     "total_minutes": {"$sum": {"$ifNull": ["$duration_minutes", 0]}},
                     "avg_duration": {"$avg": {"$ifNull": ["$duration_minutes", None]}},
                     "last_stream": {"$max": "$started_at"},
@@ -393,7 +395,9 @@ class AnalyticsService:
             logger.info(f"Recalculated stats for broadcaster {broadcaster_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to recalculate stats for broadcaster {broadcaster_id}: {e}")
+            logger.error(
+                f"Failed to recalculate stats for broadcaster {broadcaster_id}: {e}"
+            )
             return False
 
     async def get_analytics_summary(self) -> Dict[str, Any]:

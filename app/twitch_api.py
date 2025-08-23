@@ -24,7 +24,8 @@ class TwitchAPI:
         if (
             self.access_token
             and self.token_expires_at
-            and datetime.now(timezone.utc) < self.token_expires_at - timedelta(minutes=5)
+            and datetime.now(timezone.utc)
+            < self.token_expires_at - timedelta(minutes=5)
         ):
             return self.access_token
 
