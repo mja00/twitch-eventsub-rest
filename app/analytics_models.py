@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Annotated
 from pydantic import BaseModel, Field, BeforeValidator
 from bson import ObjectId
@@ -14,7 +14,7 @@ def validate_object_id(v):
 
 def utc_now():
     """Factory function for UTC datetime"""
-    return datetime.now(datetime.UTC)
+    return datetime.now(timezone.utc)
 
 
 PyObjectId = Annotated[ObjectId, BeforeValidator(validate_object_id)]

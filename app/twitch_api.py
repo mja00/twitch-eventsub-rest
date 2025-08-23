@@ -1,7 +1,7 @@
 import httpx
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 
@@ -24,7 +24,7 @@ class TwitchAPI:
         if (
             self.access_token
             and self.token_expires_at
-            and datetime.now(datetime.UTC) < self.token_expires_at - timedelta(minutes=5)
+            and datetime.now(timezone.utc) < self.token_expires_at - timedelta(minutes=5)
         ):
             return self.access_token
 
@@ -43,7 +43,7 @@ class TwitchAPI:
 
             data = response.json()
             self.access_token = data["access_token"]
-            self.token_expires_at = datetime.now(datetime.UTC) + timedelta(
+            self.token_expires_at = datetime.now(timezone.utc) + timedelta(
                 seconds=data["expires_in"]
             )
 

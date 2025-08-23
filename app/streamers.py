@@ -2,7 +2,7 @@ import logging
 from typing import List, Dict, Any, Optional
 import uuid
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.models import Streamer, StreamEvent, EventSubNotification, StreamStatus
 from app.storage import get_storage
@@ -153,7 +153,7 @@ class StreamerManager:
                 broadcaster_id=event_data["broadcaster_user_id"],
                 broadcaster_login=event_data["broadcaster_user_login"],
                 broadcaster_name=event_data["broadcaster_user_name"],
-                timestamp=datetime.now(datetime.UTC),
+                timestamp=datetime.now(timezone.utc),
                 data=event_data,
             )
 
@@ -166,7 +166,7 @@ class StreamerManager:
                 display_name=event_data["broadcaster_user_name"],
                 is_live=True,
                 stream_data=event_data,
-                last_updated=datetime.now(datetime.UTC),
+                last_updated=datetime.now(timezone.utc),
                 last_event_type="stream.online",
             )
             await self.storage.store_stream_status(status)
@@ -191,7 +191,7 @@ class StreamerManager:
                 broadcaster_id=event_data["broadcaster_user_id"],
                 broadcaster_login=event_data["broadcaster_user_login"],
                 broadcaster_name=event_data["broadcaster_user_name"],
-                timestamp=datetime.now(datetime.UTC),
+                timestamp=datetime.now(timezone.utc),
                 data=event_data,
             )
 
@@ -204,7 +204,7 @@ class StreamerManager:
                 display_name=event_data["broadcaster_user_name"],
                 is_live=False,
                 stream_data=None,
-                last_updated=datetime.now(datetime.UTC),
+                last_updated=datetime.now(timezone.utc),
                 last_event_type="stream.offline",
             )
             await self.storage.store_stream_status(status)
@@ -265,7 +265,7 @@ class StreamerManager:
                 display_name=display_name,
                 is_live=is_live,
                 stream_data=stream_data,
-                last_updated=datetime.now(datetime.UTC),
+                last_updated=datetime.now(timezone.utc),
                 last_event_type=None,
             )
             await self.storage.store_stream_status(status)
@@ -328,7 +328,7 @@ class StreamerManager:
                         should_update = (
                             current_status is None
                             or current_status.is_live
-                            or (datetime.now(datetime.UTC) - current_status.last_updated)
+                            or (datetime.now(timezone.utc) - current_status.last_updated)
                             > timedelta(minutes=10)
                         )
 
@@ -350,7 +350,7 @@ class StreamerManager:
                                     # Only mark as offline if EventSub hasn't updated recently
                                     # and we've had multiple API checks confirming they're offline
                                     time_since_update = (
-                                        datetime.now(datetime.UTC) - current_status.last_updated
+                                        datetime.now(timezone.utc) - current_status.last_updated
                                     )
                                     if time_since_update < timedelta(minutes=15):
                                         logger.debug(
@@ -366,7 +366,7 @@ class StreamerManager:
                                     display_name=streamer.display_name,
                                     is_live=is_live,
                                     stream_data=stream_data,
-                                    last_updated=datetime.now(datetime.UTC),
+                                    last_updated=datetime.now(timezone.utc),
                                     last_event_type=(
                                         current_status.last_event_type
                                         if current_status
@@ -432,7 +432,7 @@ class StreamerManager:
                         display_name=streamer.display_name,
                         is_live=is_live,
                         stream_data=stream_data,
-                        last_updated=datetime.now(datetime.UTC),
+                        last_updated=datetime.now(timezone.utc),
                         last_event_type=None,
                     )
                     await self.storage.store_stream_status(status)
