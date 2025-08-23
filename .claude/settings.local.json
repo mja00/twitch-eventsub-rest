@@ -5,7 +5,9 @@
       "mcp__context7__resolve-library-id",
       "Bash(flake8:*)",
       "Bash(python:*)",
-      "WebFetch(domain:dev.twitch.tv)"
+      "WebFetch(domain:dev.twitch.tv)",
+      "Bash(pip install:*)",
+      "Bash(black:*)"
     ],
     "deny": [],
     "ask": [],

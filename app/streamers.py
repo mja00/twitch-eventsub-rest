@@ -8,6 +8,7 @@ from app.models import Streamer, StreamEvent, EventSubNotification, StreamStatus
 from app.storage import get_storage
 from app.twitch_api import TwitchAPI
 from app.config import settings
+from app.analytics import analytics_service
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,9 @@ class StreamerManager:
             )
             await self.storage.store_stream_status(status)
 
+            # Start analytics session
+            await analytics_service.start_stream_session(event_data)
+
             logger.info(
                 f"Stream online: {event_data['broadcaster_user_name']} "
                 f"({event_data['broadcaster_user_login']})"
@@ -204,6 +208,11 @@ class StreamerManager:
                 last_event_type="stream.offline",
             )
             await self.storage.store_stream_status(status)
+
+            # End analytics session
+            await analytics_service.end_stream_session(
+                event_data["broadcaster_user_id"]
+            )
 
             logger.info(
                 f"Stream offline: {event_data['broadcaster_user_name']} "
@@ -365,6 +374,12 @@ class StreamerManager:
                                     ),
                                 )
                                 await self.storage.store_stream_status(status)
+
+                                # Capture analytics snapshot
+                                if stream_data:
+                                    await analytics_service.capture_stream_snapshot(
+                                        stream_data
+                                    )
 
                             if should_store_update:
                                 logger.debug(
@@ -596,7 +611,6 @@ class StreamerManager:
                     == streamer.user_id
                     and sub.get("transport", {}).get("callback") == settings.WEBHOOK_URL
                 ):
-
                     subscription_id = sub.get("id")
                     if event_type == "stream.online":
                         streamer.online_subscription_id = subscription_id
