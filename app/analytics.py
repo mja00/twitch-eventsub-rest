@@ -165,7 +165,7 @@ class AnalyticsService:
         duration_minutes = int((ended_at - started_at).total_seconds() / 60)
 
         # Calculate viewer stats from snapshots
-        viewer_stats = await self._calculate_viewer_stats(str(session["_id"]))
+        viewer_stats = await self._calculate_viewer_stats(str(session["_id"]), ended_at)
 
         # Update session
         update_data = {
@@ -210,7 +210,7 @@ class AnalyticsService:
             snapshot.dict(by_alias=True, exclude_unset=True)
         )
 
-    async def _calculate_viewer_stats(self, session_id: str) -> Dict[str, Any]:
+    async def _calculate_viewer_stats(self, session_id: str, ended_at: datetime = None) -> Dict[str, Any]:
         """Calculate viewer statistics for a session from snapshots taken during that session"""
         # Get the session details to find time range
         session = await self.sessions.find_one({"_id": ObjectId(session_id)})
@@ -223,7 +223,10 @@ class AnalyticsService:
 
         broadcaster_id = session["broadcaster_id"]
         started_at = session["started_at"]
-        ended_at = session.get("ended_at", datetime.now(timezone.utc))
+
+        # Use provided ended_at or get from session or current time
+        if ended_at is None:
+            ended_at = session.get("ended_at", datetime.now(timezone.utc))
 
         # Handle timezone differences for MongoDB queries
         if started_at.tzinfo is None:

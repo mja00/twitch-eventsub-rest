@@ -412,7 +412,11 @@ class StreamerManager:
                             current_status is None
                             or current_status.is_live
                             or (
-                                datetime.now(timezone.utc) - current_status.last_updated
+                                datetime.now(timezone.utc) - (
+                                    current_status.last_updated.replace(tzinfo=timezone.utc)
+                                    if current_status.last_updated.tzinfo is None
+                                    else current_status.last_updated
+                                )
                             )
                             > timedelta(minutes=10)
                         )
@@ -435,8 +439,11 @@ class StreamerManager:
                                     # Only mark as offline if EventSub hasn't updated recently
                                     # and we've had multiple API checks confirming they're offline
                                     time_since_update = (
-                                        datetime.now(timezone.utc)
-                                        - current_status.last_updated
+                                        datetime.now(timezone.utc) - (
+                                            current_status.last_updated.replace(tzinfo=timezone.utc)
+                                            if current_status.last_updated.tzinfo is None
+                                            else current_status.last_updated
+                                        )
                                     )
 
                                     # Fallback: If we've been offline for more than 10 minutes, end the session
