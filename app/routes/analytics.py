@@ -4,6 +4,10 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 
 from app.analytics import analytics_service
+from app.streamers import StreamerManager
+
+# Get the global streamer manager instance
+streamer_manager = StreamerManager()
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analytics")
@@ -17,6 +21,42 @@ async def get_analytics_summary():
         return summary
     except Exception as e:
         logger.error(f"Error getting analytics summary: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/comprehensive-summary")
+async def get_comprehensive_summary():
+    """Get comprehensive analytics summary including configured streamers"""
+    try:
+        summary = await analytics_service.get_comprehensive_summary()
+        return summary
+    except Exception as e:
+        logger.error(f"Error getting comprehensive summary: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/eventsub-diagnostics")
+async def get_eventsub_diagnostics():
+    """Get diagnostics about EventSub subscription status"""
+    try:
+        diagnostics = await streamer_manager.get_eventsub_diagnostics()
+        return diagnostics
+    except Exception as e:
+        logger.error(f"Error getting EventSub diagnostics: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/missing-offline-events")
+async def detect_missing_offline_events():
+    """Detect streams that have active sessions but are no longer live (missing offline events)"""
+    try:
+        result = await analytics_service.detect_missing_offline_events()
+        return result
+    except Exception as e:
+        logger.error(f"Error detecting missing offline events: {type(e).__name__}: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -90,6 +130,43 @@ async def get_recent_snapshots(
         }
     except Exception as e:
         logger.error(f"Error getting snapshots: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/cleanup-sessions")
+async def cleanup_sessions(max_age_hours: int = 24):
+    """Clean up old active sessions and create stats for active sessions"""
+    try:
+        # Delete old active sessions
+        deleted_count = await analytics_service.end_old_active_sessions(max_age_hours)
+
+        # Create stats for active sessions that don't have them
+        stats_created = await analytics_service.create_stats_for_active_sessions()
+
+        return {
+            "message": f"Cleanup completed: deleted {deleted_count} old sessions, created {stats_created} new stats",
+            "sessions_deleted": deleted_count,
+            "stats_created": stats_created,
+        }
+    except Exception as e:
+        logger.error(f"Error during cleanup: {type(e).__name__}: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/fallback-detection")
+async def trigger_fallback_detection():
+    """Manually trigger fallback detection for very old active sessions (>2 hours)"""
+    try:
+        deleted_count = await analytics_service.trigger_fallback_detection()
+
+        return {
+            "message": f"Fallback detection completed: deleted {deleted_count} very old sessions",
+            "sessions_deleted": deleted_count,
+        }
+    except Exception as e:
+        logger.error(f"Error during fallback detection: {type(e).__name__}: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 

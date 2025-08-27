@@ -12,6 +12,7 @@ from bson import ObjectId
 
 from app.config import settings
 from app.analytics_models import StreamSession, StreamSnapshot, StreamerStats
+from app.storage import get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +401,151 @@ class AnalyticsService:
             )
             return False
 
+    async def end_old_active_sessions(self, max_age_hours: int = 24) -> int:
+        """Delete active sessions that are older than the specified age"""
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+
+        # Find old active sessions
+        old_sessions = await self.sessions.find(
+            {"ended_at": None, "started_at": {"$lt": cutoff_time}}
+        ).to_list(None)
+
+        deleted_count = 0
+        for session in old_sessions:
+            try:
+                # Delete the session directly instead of trying to end it properly
+                result = await self.sessions.delete_one({"_id": session["_id"]})
+                if result.deleted_count > 0:
+                    deleted_count += 1
+                    logger.info(f"Deleted old stuck session for {session['broadcaster_login']} (age: {((datetime.now(timezone.utc) - session['started_at']).total_seconds() / 3600):.1f}h)")
+                else:
+                    logger.warning(f"Failed to delete session for {session['broadcaster_login']}")
+            except Exception as e:
+                logger.error(f"Failed to delete session for {session['broadcaster_login']}: {e}")
+
+        return deleted_count
+
+    async def create_stats_for_active_sessions(self) -> int:
+        """Create streamer stats for active sessions that don't have stats yet"""
+        # Find active sessions where streamer doesn't have stats
+        pipeline = [
+            {
+                "$match": {"ended_at": None}
+            },
+            {
+                "$lookup": {
+                    "from": "streamer_stats",
+                    "localField": "broadcaster_id",
+                    "foreignField": "broadcaster_id",
+                    "as": "stats"
+                }
+            },
+            {
+                "$match": {"stats": {"$size": 0}}  # No stats record exists
+            }
+        ]
+
+        active_sessions_without_stats = await self.sessions.aggregate(pipeline).to_list(None)
+
+        stats_created = 0
+        processed_streamers = set()
+
+        for session in active_sessions_without_stats:
+            broadcaster_id = session["broadcaster_id"]
+            if broadcaster_id in processed_streamers:
+                continue
+
+            try:
+                await self._update_streamer_stats(broadcaster_id)
+                stats_created += 1
+                processed_streamers.add(broadcaster_id)
+                logger.info(f"Created stats for active session: {session['broadcaster_login']}")
+            except Exception as e:
+                logger.error(f"Failed to create stats for {session['broadcaster_login']}: {e}")
+
+        return stats_created
+
+    async def trigger_fallback_detection(self) -> int:
+        """Manually trigger fallback detection for old active sessions"""
+        # Find sessions that are very old (over 2 hours) and delete them
+        # This is more aggressive than the background task's 10-minute threshold
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
+
+        old_sessions = await self.sessions.find(
+            {"ended_at": None, "started_at": {"$lt": cutoff_time}}
+        ).to_list(None)
+
+        deleted_count = 0
+        for session in old_sessions:
+            try:
+                # Delete the session directly instead of trying to end it properly
+                result = await self.sessions.delete_one({"_id": session["_id"]})
+                if result.deleted_count > 0:
+                    deleted_count += 1
+                    logger.info(
+                        f"Fallback: Deleted very old stuck session for {session['broadcaster_login']} "
+                        f"(age: {((datetime.now(timezone.utc) - session['started_at']).total_seconds() / 3600):.1f}h)"
+                    )
+                else:
+                    logger.warning(f"Failed to delete session for {session['broadcaster_login']}")
+            except Exception as e:
+                logger.error(f"Failed to delete session for {session['broadcaster_login']}: {e}")
+
+        return deleted_count
+
+    async def detect_missing_offline_events(self) -> Dict[str, Any]:
+        """Detect streams that are offline but still have active sessions (missing offline events)"""
+        try:
+            from app.storage import get_storage
+            storage = get_storage()
+            await storage.connect()
+
+            # Get currently live streams
+            live_streams = await storage.get_live_streams()
+            live_broadcaster_ids = {stream.user_id for stream in live_streams}
+
+            await storage.disconnect()
+
+            # Get active sessions
+            active_sessions = await self.sessions.find(
+                {"ended_at": None}
+            ).to_list(None)
+
+            missing_offline_events = []
+            valid_active_sessions = []
+
+            for session in active_sessions:
+                broadcaster_id = session["broadcaster_id"]
+                broadcaster_login = session["broadcaster_login"]
+                started_at = session["started_at"]
+
+                # Check if this streamer is still live
+                if broadcaster_id not in live_broadcaster_ids:
+                    # Stream is offline but session is still active - missing offline event!
+                    duration_hours = (datetime.now(timezone.utc) - started_at).total_seconds() / 3600
+                    missing_offline_events.append({
+                        "broadcaster_login": broadcaster_login,
+                        "broadcaster_id": broadcaster_id,
+                        "session_started": started_at.isoformat(),
+                        "hours_active": round(duration_hours, 1),
+                        "session_id": str(session["_id"])
+                    })
+                else:
+                    # Stream is still live, session is valid
+                    valid_active_sessions.append(session)
+
+            return {
+                "missing_offline_events": missing_offline_events,
+                "valid_active_sessions": len(valid_active_sessions),
+                "total_active_sessions": len(active_sessions),
+                "missing_count": len(missing_offline_events),
+                "missing_percentage": round((len(missing_offline_events) / len(active_sessions) * 100) if active_sessions else 0, 1)
+            }
+
+        except Exception as e:
+            logger.error(f"Error detecting missing offline events: {e}")
+            return {"error": str(e)}
+
     async def get_analytics_summary(self) -> Dict[str, Any]:
         """Get overall analytics summary"""
         if self.stats is None or self.sessions is None or self.snapshots is None:
@@ -408,6 +554,10 @@ class AnalyticsService:
         total_streamers = await self.stats.count_documents({})
         total_sessions = await self.sessions.count_documents({})
         total_snapshots = await self.snapshots.count_documents({})
+
+        # Get session statistics
+        active_sessions = await self.sessions.count_documents({"ended_at": None})
+        completed_sessions = total_sessions - active_sessions
 
         # Get total hours across all streamers
         pipeline = [
@@ -431,6 +581,64 @@ class AnalyticsService:
         return {
             "total_streamers_tracked": total_streamers,
             "total_stream_sessions": total_sessions,
+            "active_sessions": active_sessions,
+            "completed_sessions": completed_sessions,
+            "total_snapshots_captured": total_snapshots,
+            "total_hours_streamed": total_hours,
+            "avg_hours_per_streamer": avg_hours,
+        }
+
+    async def get_comprehensive_summary(self) -> Dict[str, Any]:
+        """Get comprehensive analytics summary including configured streamers"""
+        if self.stats is None or self.sessions is None or self.snapshots is None:
+            raise RuntimeError("Analytics service not connected to MongoDB")
+
+        # Get configured streamers from storage
+        storage = get_storage()
+        await storage.connect()
+        try:
+            configured_streamers = await storage.get_all_streamers()
+            total_configured = len(configured_streamers)
+        except Exception as e:
+            logger.warning(f"Could not get configured streamers count: {e}")
+            total_configured = 0
+        finally:
+            await storage.disconnect()
+
+        # Get analytics data
+        total_streamers = await self.stats.count_documents({})
+        total_sessions = await self.sessions.count_documents({})
+        total_snapshots = await self.snapshots.count_documents({})
+        active_sessions = await self.sessions.count_documents({"ended_at": None})
+        completed_sessions = total_sessions - active_sessions
+
+        # Get total hours across all streamers
+        pipeline = [
+            {
+                "$group": {
+                    "_id": None,
+                    "total_hours": {"$sum": "$total_hours_streamed"},
+                    "avg_hours_per_streamer": {"$avg": "$total_hours_streamed"},
+                }
+            }
+        ]
+
+        hours_result = await self.stats.aggregate(pipeline).to_list(1)
+        total_hours = 0
+        avg_hours = 0
+
+        if hours_result:
+            total_hours = round(hours_result[0].get("total_hours", 0), 2)
+            avg_hours = round(hours_result[0].get("avg_hours_per_streamer", 0), 2)
+
+        return {
+            "total_streamers_configured": total_configured,
+            "total_streamers_tracked": total_streamers,
+            "tracking_coverage_percent": round((total_streamers / total_configured * 100) if total_configured > 0 else 0, 1),
+            "total_stream_sessions": total_sessions,
+            "active_sessions": active_sessions,
+            "completed_sessions": completed_sessions,
+            "session_completion_rate": round((completed_sessions / total_sessions * 100) if total_sessions > 0 else 0, 1),
             "total_snapshots_captured": total_snapshots,
             "total_hours_streamed": total_hours,
             "avg_hours_per_streamer": avg_hours,

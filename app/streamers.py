@@ -172,7 +172,13 @@ class StreamerManager:
             await self.storage.store_stream_status(status)
 
             # Start analytics session
-            await analytics_service.start_stream_session(event_data)
+            try:
+                await analytics_service.start_stream_session(event_data)
+                logger.debug(f"Started analytics session for {event_data['broadcaster_user_login']}")
+            except Exception as e:
+                logger.error(f"Failed to start analytics session for {event_data['broadcaster_user_login']}: {e}")
+                # Don't fail the entire event processing if analytics fails
+                # This prevents webhook retries due to analytics issues
 
             logger.info(
                 f"Stream online: {event_data['broadcaster_user_name']} "
@@ -210,9 +216,15 @@ class StreamerManager:
             await self.storage.store_stream_status(status)
 
             # End analytics session
-            await analytics_service.end_stream_session(
-                event_data["broadcaster_user_id"]
-            )
+            try:
+                await analytics_service.end_stream_session(
+                    event_data["broadcaster_user_id"]
+                )
+                logger.debug(f"Ended analytics session for {event_data['broadcaster_user_login']}")
+            except Exception as e:
+                logger.error(f"Failed to end analytics session for {event_data['broadcaster_user_login']}: {e}")
+                # Don't fail the entire event processing if analytics fails
+                # This prevents webhook retries due to analytics issues
 
             logger.info(
                 f"Stream offline: {event_data['broadcaster_user_name']} "
@@ -305,6 +317,77 @@ class StreamerManager:
             logger.error(f"Error getting live streams: {e}")
             return []
 
+    async def get_eventsub_diagnostics(self) -> Dict[str, Any]:
+        """Get diagnostics about EventSub subscription status"""
+        try:
+            streamers = await self.storage.get_all_streamers()
+            total_streamers = len(streamers)
+            active_streamers = sum(1 for s in streamers if s.is_active)
+
+            # Get EventSub subscriptions from Twitch API
+            subscriptions = await self.twitch_api.get_eventsub_subscriptions()
+
+            # Count subscriptions by type
+            online_subs = 0
+            offline_subs = 0
+            enabled_subs = 0
+            disabled_subs = 0
+
+            for sub in subscriptions:
+                sub_type = sub.get('type', '')
+                status = sub.get('status', '')
+
+                if sub_type == 'stream.online':
+                    online_subs += 1
+                elif sub_type == 'stream.offline':
+                    offline_subs += 1
+
+                if status == 'enabled':
+                    enabled_subs += 1
+                elif status == 'disabled':
+                    disabled_subs += 1
+
+            # Check which streamers have valid subscriptions
+            streamers_with_online = 0
+            streamers_with_offline = 0
+            streamers_with_both = 0
+
+            for streamer in streamers:
+                has_online = streamer.online_subscription_id is not None
+                has_offline = streamer.offline_subscription_id is not None
+
+                if has_online:
+                    streamers_with_online += 1
+                if has_offline:
+                    streamers_with_offline += 1
+                if has_online and has_offline:
+                    streamers_with_both += 1
+
+            return {
+                "total_streamers": total_streamers,
+                "active_streamers": active_streamers,
+                "twitch_api_subscriptions": {
+                    "total": len(subscriptions),
+                    "online": online_subs,
+                    "offline": offline_subs,
+                    "enabled": enabled_subs,
+                    "disabled": disabled_subs
+                },
+                "configured_subscriptions": {
+                    "with_online": streamers_with_online,
+                    "with_offline": streamers_with_offline,
+                    "with_both": streamers_with_both
+                },
+                "subscription_coverage": {
+                    "online_percent": round((streamers_with_online / total_streamers * 100) if total_streamers > 0 else 0, 1),
+                    "offline_percent": round((streamers_with_offline / total_streamers * 100) if total_streamers > 0 else 0, 1),
+                    "both_percent": round((streamers_with_both / total_streamers * 100) if total_streamers > 0 else 0, 1)
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting EventSub diagnostics: {e}")
+            return {"error": str(e)}
+
     async def _update_live_streams(self):
         """Background task to update live stream data every 5 minutes"""
         while True:
@@ -355,7 +438,21 @@ class StreamerManager:
                                         datetime.now(timezone.utc)
                                         - current_status.last_updated
                                     )
-                                    if time_since_update < timedelta(minutes=15):
+
+                                    # Fallback: If we've been offline for more than 10 minutes, end the session
+                                    # This handles cases where EventSub offline events are missed
+                                    if time_since_update >= timedelta(minutes=10):
+                                        logger.info(
+                                            f"Fallback detection: Ending session for {streamer.username} "
+                                            f"(API shows offline, last EventSub update: {time_since_update.seconds//60}m ago)"
+                                        )
+                                        # End the analytics session
+                                        await analytics_service.end_stream_session(
+                                            current_status.user_id,
+                                            datetime.now(timezone.utc)
+                                        )
+                                        should_store_update = True
+                                    elif time_since_update < timedelta(minutes=15):
                                         logger.debug(
                                             f"API says {streamer.username} is offline but recent status was live, keeping live status"
                                         )
