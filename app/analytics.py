@@ -154,8 +154,14 @@ class AnalyticsService:
             logger.warning(f"No active session found for broadcaster {broadcaster_id}")
             return
 
-        # Calculate duration
+        # Calculate duration - handle timezone differences
         started_at = session["started_at"]
+        if started_at.tzinfo is None and ended_at.tzinfo is not None:
+            # Make both naive or both aware
+            ended_at = ended_at.replace(tzinfo=None)
+        elif started_at.tzinfo is not None and ended_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=None)
+
         duration_minutes = int((ended_at - started_at).total_seconds() / 60)
 
         # Calculate viewer stats from snapshots
@@ -218,6 +224,11 @@ class AnalyticsService:
         broadcaster_id = session["broadcaster_id"]
         started_at = session["started_at"]
         ended_at = session.get("ended_at", datetime.now(timezone.utc))
+
+        # Handle timezone differences for MongoDB queries
+        if started_at.tzinfo is None:
+            # started_at is naive, convert ended_at to naive for comparison
+            ended_at = ended_at.replace(tzinfo=None) if ended_at.tzinfo is not None else ended_at
 
         # Find snapshots within the session time range
         pipeline = [
@@ -417,7 +428,13 @@ class AnalyticsService:
                 result = await self.sessions.delete_one({"_id": session["_id"]})
                 if result.deleted_count > 0:
                     deleted_count += 1
-                    logger.info(f"Deleted old stuck session for {session['broadcaster_login']} (age: {((datetime.now(timezone.utc) - session['started_at']).total_seconds() / 3600):.1f}h)")
+                    # Calculate age safely handling timezone differences
+                    now = datetime.now(timezone.utc)
+                    session_start = session['started_at']
+                    if session_start.tzinfo is None:
+                        now = now.replace(tzinfo=None)
+                    age_hours = (now - session_start).total_seconds() / 3600
+                    logger.info(f"Deleted old stuck session for {session['broadcaster_login']} (age: {age_hours:.1f}h)")
                 else:
                     logger.warning(f"Failed to delete session for {session['broadcaster_login']}")
             except Exception as e:
@@ -482,9 +499,15 @@ class AnalyticsService:
                 result = await self.sessions.delete_one({"_id": session["_id"]})
                 if result.deleted_count > 0:
                     deleted_count += 1
+                    # Calculate age safely handling timezone differences
+                    now = datetime.now(timezone.utc)
+                    session_start = session['started_at']
+                    if session_start.tzinfo is None:
+                        now = now.replace(tzinfo=None)
+                    age_hours = (now - session_start).total_seconds() / 3600
                     logger.info(
                         f"Fallback: Deleted very old stuck session for {session['broadcaster_login']} "
-                        f"(age: {((datetime.now(timezone.utc) - session['started_at']).total_seconds() / 3600):.1f}h)"
+                        f"(age: {age_hours:.1f}h)"
                     )
                 else:
                     logger.warning(f"Failed to delete session for {session['broadcaster_login']}")
@@ -522,7 +545,13 @@ class AnalyticsService:
                 # Check if this streamer is still live
                 if broadcaster_id not in live_broadcaster_ids:
                     # Stream is offline but session is still active - missing offline event!
-                    duration_hours = (datetime.now(timezone.utc) - started_at).total_seconds() / 3600
+                    # Handle timezone-aware vs naive datetime comparison
+                    now = datetime.now(timezone.utc)
+                    if started_at.tzinfo is None:
+                        # started_at is naive, make now naive too
+                        now = now.replace(tzinfo=None)
+
+                    duration_hours = (now - started_at).total_seconds() / 3600
                     missing_offline_events.append({
                         "broadcaster_login": broadcaster_login,
                         "broadcaster_id": broadcaster_id,
