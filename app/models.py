@@ -49,7 +49,7 @@ class StreamEvent(BaseModel):
     """Stored stream event"""
 
     id: str
-    event_type: str  # "stream.online" or "stream.offline"
+    event_type: str  # "stream.online", "stream.offline" or "channel.update"
     broadcaster_id: str
     broadcaster_login: str
     broadcaster_name: str
@@ -66,6 +66,7 @@ class Streamer(BaseModel):
     subscription_id: Optional[str] = None  # Deprecated: use online_subscription_id
     online_subscription_id: Optional[str] = None
     offline_subscription_id: Optional[str] = None
+    update_subscription_id: Optional[str] = None
     is_active: bool = True
 
 
@@ -79,3 +80,5 @@ class StreamStatus(BaseModel):
     stream_data: Optional[Dict[str, Any]] = None
     last_updated: datetime
     last_event_type: Optional[str] = None
+    # When channel.update last pushed title/category; Helix lags behind pushes, so its values win briefly.
+    metadata_updated_at: Optional[datetime] = None

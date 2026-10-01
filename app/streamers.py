@@ -12,6 +12,33 @@ from app.analytics import analytics_service
 
 logger = logging.getLogger(__name__)
 
+# Helix /streams can trail a channel.update push by minutes; past this, Helix has caught up and wins again.
+PUSHED_METADATA_TTL = timedelta(minutes=10)
+PUSHED_FIELDS = ("title", "game_name", "game_id")
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def keep_pushed_metadata(
+    current: Optional[StreamStatus],
+    stream_data: Optional[Dict[str, Any]],
+    now: datetime,
+) -> Optional[Dict[str, Any]]:
+    """Overlay recently pushed title/category on Helix stream data so a stale Helix read can't revert them"""
+    if not stream_data or current is None or not current.stream_data:
+        return stream_data
+    if current.metadata_updated_at is None:
+        return stream_data
+    if now - _aware(current.metadata_updated_at) > PUSHED_METADATA_TTL:
+        return stream_data
+    merged = dict(stream_data)
+    for field in PUSHED_FIELDS:
+        if field in current.stream_data:
+            merged[field] = current.stream_data[field]
+    return merged
+
 
 class StreamerManager:
     """Manages streamer configurations and EventSub subscriptions"""
@@ -94,6 +121,8 @@ class StreamerManager:
             subscription_ids.append(("online", streamer.online_subscription_id))
         if streamer.offline_subscription_id:
             subscription_ids.append(("offline", streamer.offline_subscription_id))
+        if streamer.update_subscription_id:
+            subscription_ids.append(("update", streamer.update_subscription_id))
         # Backward compatibility
         if streamer.subscription_id and streamer.subscription_id not in [
             streamer.online_subscription_id,
@@ -127,6 +156,7 @@ class StreamerManager:
                 "subscription_id": s.subscription_id,  # Deprecated
                 "online_subscription_id": s.online_subscription_id,
                 "offline_subscription_id": s.offline_subscription_id,
+                "update_subscription_id": s.update_subscription_id,
                 "is_active": s.is_active,
             }
             for s in streamers
@@ -141,6 +171,8 @@ class StreamerManager:
             await self._handle_stream_online(event_data)
         elif event_type == "stream.offline":
             await self._handle_stream_offline(event_data)
+        elif event_type == "channel.update":
+            await self._handle_channel_update(event_data)
         else:
             logger.warning(f"Unhandled event type: {event_type}")
 
@@ -159,24 +191,44 @@ class StreamerManager:
 
             await self.storage.store_event(stream_event)
 
+            # Twitch redelivers notifications; a repeat for the same stream must not drop pushed title/category.
+            current = await self.storage.get_stream_status(
+                event_data["broadcaster_user_login"]
+            )
+            stream_data = event_data
+            metadata_updated_at = None
+            if (
+                current
+                and current.is_live
+                and current.stream_data
+                and current.stream_data.get("id") == event_data.get("id")
+            ):
+                stream_data = {**current.stream_data, **event_data}
+                metadata_updated_at = current.metadata_updated_at
+
             # Update stream status
             status = StreamStatus(
                 user_id=event_data["broadcaster_user_id"],
                 username=event_data["broadcaster_user_login"],
                 display_name=event_data["broadcaster_user_name"],
                 is_live=True,
-                stream_data=event_data,
+                stream_data=stream_data,
                 last_updated=datetime.now(timezone.utc),
                 last_event_type="stream.online",
+                metadata_updated_at=metadata_updated_at,
             )
             await self.storage.store_stream_status(status)
 
             # Start analytics session
             try:
                 await analytics_service.start_stream_session(event_data)
-                logger.debug(f"Started analytics session for {event_data['broadcaster_user_login']}")
+                logger.debug(
+                    f"Started analytics session for {event_data['broadcaster_user_login']}"
+                )
             except Exception as e:
-                logger.error(f"Failed to start analytics session for {event_data['broadcaster_user_login']}: {e}")
+                logger.error(
+                    f"Failed to start analytics session for {event_data['broadcaster_user_login']}: {e}"
+                )
                 # Don't fail the entire event processing if analytics fails
                 # This prevents webhook retries due to analytics issues
 
@@ -220,9 +272,13 @@ class StreamerManager:
                 await analytics_service.end_stream_session(
                     event_data["broadcaster_user_id"]
                 )
-                logger.debug(f"Ended analytics session for {event_data['broadcaster_user_login']}")
+                logger.debug(
+                    f"Ended analytics session for {event_data['broadcaster_user_login']}"
+                )
             except Exception as e:
-                logger.error(f"Failed to end analytics session for {event_data['broadcaster_user_login']}: {e}")
+                logger.error(
+                    f"Failed to end analytics session for {event_data['broadcaster_user_login']}: {e}"
+                )
                 # Don't fail the entire event processing if analytics fails
                 # This prevents webhook retries due to analytics issues
 
@@ -233,6 +289,52 @@ class StreamerManager:
 
         except Exception as e:
             logger.error(f"Error handling stream.offline event: {e}")
+
+    async def _handle_channel_update(self, event_data: Dict[str, Any]) -> None:
+        """Handle channel.update: apply the new title and category immediately instead of waiting for Helix"""
+        try:
+            login = event_data["broadcaster_user_login"]
+            now = datetime.now(timezone.utc)
+            await self.storage.store_event(
+                StreamEvent(
+                    id=str(uuid.uuid4()),
+                    event_type="channel.update",
+                    broadcaster_id=event_data["broadcaster_user_id"],
+                    broadcaster_login=login,
+                    broadcaster_name=event_data["broadcaster_user_name"],
+                    timestamp=now,
+                    data=event_data,
+                )
+            )
+
+            current = await self.storage.get_stream_status(login)
+            # Only live stream data is patched; an offline or unknown channel keeps its status so Helix stays authoritative.
+            if current is None or not current.is_live or not current.stream_data:
+                return
+            stream_data = dict(current.stream_data)
+            stream_data["title"] = event_data.get("title", "")
+            stream_data["game_name"] = event_data.get("category_name", "")
+            stream_data["game_id"] = event_data.get("category_id", "")
+
+            await self.storage.store_stream_status(
+                StreamStatus(
+                    user_id=event_data["broadcaster_user_id"],
+                    username=login,
+                    display_name=event_data["broadcaster_user_name"],
+                    is_live=True,
+                    stream_data=stream_data,
+                    last_updated=now,
+                    last_event_type="channel.update",
+                    metadata_updated_at=now,
+                )
+            )
+            logger.info(
+                f"Channel update: {event_data['broadcaster_user_name']} "
+                f"now '{event_data.get('category_name', '')}' - {event_data.get('title', '')}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error handling channel.update event: {e}")
 
     async def get_stream_status(self, username: str) -> Optional[Dict[str, Any]]:
         """Get current stream status with fallback to Twitch API"""
@@ -330,27 +432,31 @@ class StreamerManager:
             # Count subscriptions by type
             online_subs = 0
             offline_subs = 0
+            update_subs = 0
             enabled_subs = 0
             disabled_subs = 0
 
             for sub in subscriptions:
-                sub_type = sub.get('type', '')
-                status = sub.get('status', '')
+                sub_type = sub.get("type", "")
+                status = sub.get("status", "")
 
-                if sub_type == 'stream.online':
+                if sub_type == "stream.online":
                     online_subs += 1
-                elif sub_type == 'stream.offline':
+                elif sub_type == "stream.offline":
                     offline_subs += 1
+                elif sub_type == "channel.update":
+                    update_subs += 1
 
-                if status == 'enabled':
+                if status == "enabled":
                     enabled_subs += 1
-                elif status == 'disabled':
+                elif status == "disabled":
                     disabled_subs += 1
 
             # Check which streamers have valid subscriptions
             streamers_with_online = 0
             streamers_with_offline = 0
             streamers_with_both = 0
+            streamers_with_update = 0
 
             for streamer in streamers:
                 has_online = streamer.online_subscription_id is not None
@@ -362,6 +468,8 @@ class StreamerManager:
                     streamers_with_offline += 1
                 if has_online and has_offline:
                     streamers_with_both += 1
+                if streamer.update_subscription_id is not None:
+                    streamers_with_update += 1
 
             return {
                 "total_streamers": total_streamers,
@@ -370,29 +478,52 @@ class StreamerManager:
                     "total": len(subscriptions),
                     "online": online_subs,
                     "offline": offline_subs,
+                    "update": update_subs,
                     "enabled": enabled_subs,
-                    "disabled": disabled_subs
+                    "disabled": disabled_subs,
                 },
                 "configured_subscriptions": {
                     "with_online": streamers_with_online,
                     "with_offline": streamers_with_offline,
-                    "with_both": streamers_with_both
+                    "with_both": streamers_with_both,
+                    "with_update": streamers_with_update,
                 },
                 "subscription_coverage": {
-                    "online_percent": round((streamers_with_online / total_streamers * 100) if total_streamers > 0 else 0, 1),
-                    "offline_percent": round((streamers_with_offline / total_streamers * 100) if total_streamers > 0 else 0, 1),
-                    "both_percent": round((streamers_with_both / total_streamers * 100) if total_streamers > 0 else 0, 1)
-                }
+                    "online_percent": round(
+                        (
+                            (streamers_with_online / total_streamers * 100)
+                            if total_streamers > 0
+                            else 0
+                        ),
+                        1,
+                    ),
+                    "offline_percent": round(
+                        (
+                            (streamers_with_offline / total_streamers * 100)
+                            if total_streamers > 0
+                            else 0
+                        ),
+                        1,
+                    ),
+                    "both_percent": round(
+                        (
+                            (streamers_with_both / total_streamers * 100)
+                            if total_streamers > 0
+                            else 0
+                        ),
+                        1,
+                    ),
+                },
             }
         except Exception as e:
             logger.error(f"Error getting EventSub diagnostics: {e}")
             return {"error": str(e)}
 
     async def _update_live_streams(self):
-        """Background task to update live stream data every 5 minutes"""
+        """Background task to refresh live stream data every STATUS_REFRESH_SECONDS"""
         while True:
             try:
-                await asyncio.sleep(300)  # 5 minutes
+                await asyncio.sleep(settings.STATUS_REFRESH_SECONDS)
 
                 # Get all monitored streamers
                 streamers = await self.storage.get_all_streamers()
@@ -412,8 +543,11 @@ class StreamerManager:
                             current_status is None
                             or current_status.is_live
                             or (
-                                datetime.now(timezone.utc) - (
-                                    current_status.last_updated.replace(tzinfo=timezone.utc)
+                                datetime.now(timezone.utc)
+                                - (
+                                    current_status.last_updated.replace(
+                                        tzinfo=timezone.utc
+                                    )
                                     if current_status.last_updated.tzinfo is None
                                     else current_status.last_updated
                                 )
@@ -427,6 +561,13 @@ class StreamerManager:
                                 streamer.user_id
                             )
                             is_live = stream_data is not None
+                            # A channel.update may have landed during the Helix call, so merge against the latest status.
+                            latest_status = await self.storage.get_stream_status(
+                                streamer.username
+                            )
+                            stream_data = keep_pushed_metadata(
+                                latest_status, stream_data, datetime.now(timezone.utc)
+                            )
 
                             # Be conservative: only update if we have a definitive change
                             # or if this is the first time we're checking
@@ -438,12 +579,12 @@ class StreamerManager:
                                 if current_status.is_live and not is_live:
                                     # Only mark as offline if EventSub hasn't updated recently
                                     # and we've had multiple API checks confirming they're offline
-                                    time_since_update = (
-                                        datetime.now(timezone.utc) - (
-                                            current_status.last_updated.replace(tzinfo=timezone.utc)
-                                            if current_status.last_updated.tzinfo is None
-                                            else current_status.last_updated
+                                    time_since_update = datetime.now(timezone.utc) - (
+                                        current_status.last_updated.replace(
+                                            tzinfo=timezone.utc
                                         )
+                                        if current_status.last_updated.tzinfo is None
+                                        else current_status.last_updated
                                     )
 
                                     # Fallback: If we've been offline for more than 10 minutes, end the session
@@ -456,7 +597,7 @@ class StreamerManager:
                                         # End the analytics session
                                         await analytics_service.end_stream_session(
                                             current_status.user_id,
-                                            datetime.now(timezone.utc)
+                                            datetime.now(timezone.utc),
                                         )
                                         should_store_update = True
                                     elif time_since_update < timedelta(minutes=15):
@@ -477,6 +618,11 @@ class StreamerManager:
                                     last_event_type=(
                                         current_status.last_event_type
                                         if current_status
+                                        else None
+                                    ),
+                                    metadata_updated_at=(
+                                        latest_status.metadata_updated_at
+                                        if latest_status
                                         else None
                                     ),
                                 )
@@ -583,6 +729,7 @@ class StreamerManager:
                 # Check if subscriptions exist and are valid
                 online_valid = False
                 offline_valid = False
+                update_valid = False
 
                 updated_streamer = False
 
@@ -603,6 +750,10 @@ class StreamerManager:
                         streamer.offline_subscription_id
                     )
 
+                if streamer.update_subscription_id:
+                    update_valid = await self.twitch_api.validate_subscription(
+                        streamer.update_subscription_id
+                    )
                 # Save any backward compatibility updates
                 if updated_streamer:
                     await self.storage.store_streamer(streamer)
@@ -627,6 +778,13 @@ class StreamerManager:
                             "offline",
                         )
                         streamer.offline_subscription_id = None
+                    if not update_valid and streamer.update_subscription_id:
+                        await self._delete_subscription_safely(
+                            streamer.update_subscription_id,
+                            streamer.username,
+                            "update",
+                        )
+                        streamer.update_subscription_id = None
 
                     # Recreate all subscriptions
                     try:
@@ -639,6 +797,18 @@ class StreamerManager:
                         logger.error(
                             f"Failed to fix subscriptions for {streamer.username}: {e}"
                         )
+                elif not update_valid:
+                    # Valid online/offline subs are left alone so adding channel.update can't deactivate a streamer.
+                    if streamer.update_subscription_id:
+                        await self._delete_subscription_safely(
+                            streamer.update_subscription_id,
+                            streamer.username,
+                            "update",
+                        )
+                        streamer.update_subscription_id = None
+                    await self._create_update_subscription(streamer, streamer.username)
+                    await self.storage.store_streamer(streamer)
+                    fixed_count += 1
                 else:
                     logger.debug(f"All subscriptions valid for {streamer.username}")
 
@@ -652,7 +822,7 @@ class StreamerManager:
     async def _create_subscriptions_for_streamer(
         self, streamer: Streamer, username: str
     ) -> None:
-        """Create both online and offline EventSub subscriptions for a streamer"""
+        """Create online, offline and channel.update EventSub subscriptions for a streamer"""
         online_success = False
         offline_success = False
 
@@ -703,6 +873,8 @@ class StreamerManager:
                     f"Failed to create stream.offline subscription for {username}: {e}"
                 )
 
+        await self._create_update_subscription(streamer, username)
+
         # Update streamer status based on success
         streamer.is_active = online_success and offline_success
         await self.storage.store_streamer(streamer)
@@ -712,13 +884,38 @@ class StreamerManager:
                 f"Streamer {username} marked as inactive due to subscription failures"
             )
 
+    async def _create_update_subscription(
+        self, streamer: Streamer, username: str
+    ) -> None:
+        """Create the channel.update subscription; v2 needs no broadcaster scopes and failure isn't fatal"""
+        try:
+            streamer.update_subscription_id = (
+                await self.twitch_api.create_eventsub_subscription(
+                    event_type="channel.update",
+                    condition={"broadcaster_user_id": streamer.user_id},
+                    version="2",
+                )
+            )
+            logger.info(
+                f"Created channel.update subscription {streamer.update_subscription_id} for {username}"
+            )
+        except Exception as e:
+            if "409" in str(e) and "already exists" in str(e):
+                await self._find_existing_subscription(
+                    streamer, username, "channel.update"
+                )
+            else:
+                logger.error(
+                    f"Failed to create channel.update subscription for {username}: {e}"
+                )
+
     async def _find_existing_subscription(
         self, streamer: Streamer, username: str, event_type: str
     ) -> bool:
         """Find existing subscription for a streamer and event type"""
         try:
             subscriptions = await self.twitch_api.get_eventsub_subscriptions()
-            
+
             for sub in subscriptions:
                 if (
                     sub.get("type") == event_type
@@ -734,6 +931,8 @@ class StreamerManager:
                         )
                     elif event_type == "stream.offline":
                         streamer.offline_subscription_id = subscription_id
+                    elif event_type == "channel.update":
+                        streamer.update_subscription_id = subscription_id
 
                     logger.info(
                         f"Found existing {event_type} subscription {subscription_id} for {username}"

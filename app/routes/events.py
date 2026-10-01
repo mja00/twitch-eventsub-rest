@@ -14,11 +14,11 @@ async def get_recent_events(limit: int = 50):
 
 @router.get("/type/{event_type}")
 async def get_events_by_type(event_type: str, limit: int = 50):
-    """Get recent stream events filtered by event type (stream.online or stream.offline)"""
-    if event_type not in ["stream.online", "stream.offline"]:
+    """Get recent stream events filtered by event type (stream.online, stream.offline or channel.update)"""
+    if event_type not in ["stream.online", "stream.offline", "channel.update"]:
         raise HTTPException(
             status_code=400,
-            detail="event_type must be 'stream.online' or 'stream.offline'",
+            detail="event_type must be 'stream.online', 'stream.offline' or 'channel.update'",
         )
 
     storage = get_storage()

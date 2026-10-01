@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a **Twitch EventSub REST API** built with FastAPI that monitors Twitch streamers and provides real-time stream status information. The application listens to Twitch's EventSub webhooks for `stream.online` and `stream.offline` events and stores this data in either Redis or in-memory storage.
+This is a **Twitch EventSub REST API** built with FastAPI that monitors Twitch streamers and provides real-time stream status information. The application listens to Twitch's EventSub webhooks for `stream.online`, `stream.offline` and `channel.update` (v2) events and stores this data in either Redis or in-memory storage.
 
 ## Key Technologies & Dependencies
 
@@ -43,14 +43,14 @@ app/
 
 ### 1. EventSub Webhook Processing
 - Receives and verifies Twitch EventSub webhooks
-- Handles `stream.online` and `stream.offline` events
+- Handles `stream.online`, `stream.offline` and `channel.update` events; `channel.update` patches live title/category immediately and briefly outranks Helix (`keep_pushed_metadata`)
 - Stores events with broadcaster information and timestamps
 - Responds to webhook challenges for subscription verification
 
 ### 2. Streamer Management
 - Add/remove streamers to monitor
 - Automatic EventSub subscription creation and validation
-- Background status updates every 5 minutes
+- Background status updates every `STATUS_REFRESH_SECONDS` (default 300)
 - Startup initialization of all monitored streamers
 
 ### 3. REST API Endpoints
@@ -71,7 +71,7 @@ app/
 
 ### 5. Analytics System
 - **Stream Session Tracking**: Complete session lifecycle from online to offline events
-- **Real-time Snapshots**: Viewer count and metadata captured every 5 minutes during streams
+- **Real-time Snapshots**: Viewer count and metadata captured every `STATUS_REFRESH_SECONDS` during streams
 - **Aggregated Statistics**: Total hours, average viewers, max concurrent viewers per streamer
 - **Historical Data**: Searchable stream history with detailed viewer statistics
 - **MongoDB Integration**: Optimized collections with proper indexing for time-series data
@@ -206,6 +206,7 @@ async def new_operation(self, key: str, data: dict) -> bool:
 - `MONGO_INITDB_ROOT_USERNAME` - MongoDB root username for Docker
 - `MONGO_INITDB_ROOT_PASSWORD` - MongoDB root password for Docker
 - `DEFAULT_STREAMERS` - Comma-separated list of streamers to monitor
+- `STATUS_REFRESH_SECONDS` - Helix refresh interval for live streams (default: `300`)
 - `REQUIRE_API_KEY` - Enable API key authentication (`true` or `false`)
 - `API_KEY` - API key for protected endpoints
 

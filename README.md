@@ -4,12 +4,12 @@ A Python FastAPI server that listens to Twitch's EventSub system for stream live
 
 ## Features
 
-- 🎮 **Twitch EventSub Integration**: Listen to stream.online and stream.offline events
+- 🎮 **Twitch EventSub Integration**: Listen to stream.online, stream.offline and channel.update events
 - 🔧 **Flexible Storage**: Redis for production, in-memory for testing
 - 📊 **Analytics & MongoDB**: Track stream duration, viewer statistics, and historical data
 - 📡 **REST API**: Manage streamers and view events via HTTP endpoints
 - 🔍 **Live Stream Status**: Real-time status checking for any Twitch streamer
-- ⏰ **Smart Updates**: Background refresh of live stream data every 5 minutes
+- ⏰ **Smart Updates**: Title and category changes pushed via channel.update, plus a background refresh of live stream data (every 5 minutes by default)
 - 🚀 **Startup Initialization**: Populate stream status and validate subscriptions on server start
 - 🐳 **Docker Ready**: Complete Docker setup with MongoDB and Redis
 - 🔐 **Secure**: Webhook signature verification and optional API key authentication
@@ -124,7 +124,7 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 
 ### Events
 - `GET /events?limit=50` - Get recent stream events
-- `GET /events/type/{event_type}?limit=50` - Get events filtered by type (`stream.online` or `stream.offline`)
+- `GET /events/type/{event_type}?limit=50` - Get events filtered by type (`stream.online`, `stream.offline` or `channel.update`)
 - `GET /events/streamer/{username}?limit=50` - Get events filtered by streamer username
 - `POST /webhooks/eventsub` - EventSub webhook endpoint (used by Twitch)
 
@@ -248,6 +248,7 @@ curl -H "Authorization: Bearer your-api-key" -X POST "http://localhost:8000/admi
 | `MONGO_INITDB_ROOT_USERNAME` | MongoDB root username (Docker) | Required for Docker |
 | `MONGO_INITDB_ROOT_PASSWORD` | MongoDB root password (Docker) | Required for Docker |
 | `DEFAULT_STREAMERS` | Comma-separated list of streamers to monitor | Empty |
+| `STATUS_REFRESH_SECONDS` | How often live streams are re-read from Helix for viewer counts | `300` |
 | `REQUIRE_API_KEY` | Enable API key authentication (`true` or `false`) | `false` |
 | `API_KEY` | API key for protected endpoints | Empty |
 
@@ -323,6 +324,7 @@ The server listens for these Twitch EventSub events:
 
 - `stream.online` - When a streamer goes live
 - `stream.offline` - When a streamer goes offline
+- `channel.update` - When a streamer changes title or category; applied to the live status immediately
 
 Each event is stored with:
 - Event ID and type
@@ -344,7 +346,8 @@ Each event is stored with:
 
 ### Real-time Updates
 - **EventSub Webhooks**: Twitch sends instant notifications when streams go live/offline
-- **Background Refresh**: Every 5 minutes, updates viewer counts, games, titles for live streams
+- **Channel Updates**: Title and category changes arrive within seconds via `channel.update`; for 10 minutes afterwards they win over Helix, whose `/streams` data lags behind
+- **Background Refresh**: Every `STATUS_REFRESH_SECONDS` (default 5 minutes), updates viewer counts, games, titles for live streams
 - **API Fallback**: Unknown streamers are queried from Twitch API and cached
 
 ### Data Flow
@@ -360,7 +363,7 @@ Twitch EventSub → Webhook → Update Storage → Background Refresh → API Re
 The system automatically tracks comprehensive stream session data:
 
 - **Session Duration**: Precise start/end times with calculated duration in minutes
-- **Viewer Statistics**: Real-time snapshots of viewer counts every 5 minutes
+- **Viewer Statistics**: Real-time snapshots of viewer counts every `STATUS_REFRESH_SECONDS`
 - **Stream Metadata**: Game categories, stream titles, language, and tags
 - **Historical Data**: Complete session history with searchable records
 

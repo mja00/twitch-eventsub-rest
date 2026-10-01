@@ -99,12 +99,12 @@ class TwitchAPI:
             return None
 
     async def create_eventsub_subscription(
-        self, event_type: str, condition: Dict[str, Any]
+        self, event_type: str, condition: Dict[str, Any], version: str = "1"
     ) -> str:
         """Create EventSub subscription"""
         payload = {
             "type": event_type,
-            "version": "1",
+            "version": version,
             "condition": condition,
             "transport": {
                 "method": "webhook",

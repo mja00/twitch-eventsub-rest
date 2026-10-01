@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Default streamers to monitor
     DEFAULT_STREAMERS: str = os.getenv("DEFAULT_STREAMERS", "")
 
+    # How often live streams are re-read from Helix for viewers; title and category also arrive via channel.update.
+    STATUS_REFRESH_SECONDS: int = int(os.getenv("STATUS_REFRESH_SECONDS", "300"))
+
     # API Security
     REQUIRE_API_KEY: bool = os.getenv("REQUIRE_API_KEY", "false").lower() == "true"
     API_KEY: str = os.getenv("API_KEY", "")

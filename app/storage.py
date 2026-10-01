@@ -238,6 +238,11 @@ class RedisStorage(StorageInterface):
             "stream_data": status.stream_data,
             "last_updated": status.last_updated.isoformat(),
             "last_event_type": status.last_event_type,
+            "metadata_updated_at": (
+                status.metadata_updated_at.isoformat()
+                if status.metadata_updated_at
+                else None
+            ),
         }
 
         await self.redis_client.hset(
